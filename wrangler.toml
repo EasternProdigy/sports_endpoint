@@ -1,0 +1,26 @@
+name = "matrix-scoreboard-worker"
+main = "cloudflare_worker.js"
+compatibility_date = "2026-02-13"
+workers_dev = true
+
+# Add your Cloudflare Account ID here or set CLOUDFLARE_ACCOUNT_ID in CI/secrets
+# account_id = ""
+
+[observability]
+enabled = true
+
+# KV binding used by cloudflare_worker.js
+[[kv_namespaces]]
+binding = "CONTROL_KV"
+id = "REPLACE_WITH_PROD_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
+
+[vars]
+# Public/non-secret vars (edit as needed)
+SPORTS_API_URL = "https://example.com/sports"
+NCAA_SOFTBALL_API_URL = "https://example.com/ncaa-softball"
+NCAA_BASKETBALL_API_URL = "https://example.com/ncaa-basketball"
+OLYMPICS_API_URL = "https://example.com/olympics"
+SOCCER_API_URL = "https://example.com/soccer"
+INDIVIDUAL_SPORTS_API_URL = "https://example.com/individual"
+WELLESLEY_SOFTBALL_URL = "https://athletics.wellesley.edu/sports/softball/schedule_text"
