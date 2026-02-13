@@ -142,7 +142,7 @@ DIAGNOSTICS_DURATION_SECONDS = _env_int("DIAGNOSTICS_DURATION_SECONDS", 4)
 
 # Cloud control (Worker)
 REMOTE_CONTROL_ENABLED = _env_bool("REMOTE_CONTROL_ENABLED", True)
-CONTROL_BASE_URL = (os.getenv("CONTROL_BASE_URL") or "").strip().rstrip("/")
+CONTROL_BASE_URL = (os.getenv("CONTROL_BASE_URL") or "https://matrix-scoreboard-worker.wmezitis.workers.dev").strip().rstrip("/")
 CONTROL_DEVICE_ID = (os.getenv("CONTROL_DEVICE_ID") or "matrix-01").strip()
 CONTROL_API_TOKEN = (os.getenv("CONTROL_API_TOKEN") or "").strip()
 CONTROL_POLL_SECONDS = _env_int("CONTROL_POLL_SECONDS", 3)
@@ -272,8 +272,13 @@ TEAM_STYLES = {
 # -----------------------
 # WiFi creds (settings.toml)
 # -----------------------
-TEXAS_WIFI_SSID = os.getenv("TEXAS_WIFI_SSID") or os.getenv("CIRCUITPY_WIFI_SSID")
-TEXAS_WIFI_PASSWORD = os.getenv("TEXAS_WIFI_PASSWORD") or os.getenv("CIRCUITPY_WIFI_PASSWORD")
+CIRCUITPY_WIFI_SSID = os.getenv("CIRCUITPY_WIFI_SSID")
+CIRCUITPY_WIFI_PASSWORD = os.getenv("CIRCUITPY_WIFI_PASSWORD")
+
+# Primary profile is TEXAS_*.
+# CIRCUITPY_* remains supported as a compatibility fallback alias.
+TEXAS_WIFI_SSID = os.getenv("TEXAS_WIFI_SSID") or CIRCUITPY_WIFI_SSID
+TEXAS_WIFI_PASSWORD = os.getenv("TEXAS_WIFI_PASSWORD") or CIRCUITPY_WIFI_PASSWORD
 NORTHEAST_WIFI_SSID = os.getenv("NORTHEAST_WIFI_SSID")
 NORTHEAST_WIFI_PASSWORD = os.getenv("NORTHEAST_WIFI_PASSWORD")
 
