@@ -23,7 +23,7 @@ NCAA_BASKETBALL_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketb
 OLYMPICS_API_URL = "https://api.sportsdata.io/v3/olympics/scores/json/Competitions"
 SOCCER_API_URL = "https://api.football-data.org/v4/matches"
 INDIVIDUAL_SPORTS_API_URL = "https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard"
-WELLESLEY_SOFTBALL_URL = "https://athletics.wellesley.edu/sports/softball/schedule_text"
+WELLESLEY_SOFTBALL_URL = "https://wellesleyblue.com/services/schedule_txt.ashx?schedule=366"
 # Set via `wrangler secret put` in real deploys:
 # SOCCER_API_TOKEN
 # OLYMPICS_API_KEY
