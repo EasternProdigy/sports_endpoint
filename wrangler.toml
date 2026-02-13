@@ -12,15 +12,18 @@ enabled = true
 # KV binding used by cloudflare_worker.js
 [[kv_namespaces]]
 binding = "CONTROL_KV"
-id = "REPLACE_WITH_PROD_KV_NAMESPACE_ID"
-preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
+id = "b1325c57c7934f6b8ee8551ae93ed2fc"
+preview_id = "80ad5a42308e442dbe065957dc28a948"
 
 [vars]
 # Public/non-secret vars (edit as needed)
-SPORTS_API_URL = "https://example.com/sports"
-NCAA_SOFTBALL_API_URL = "https://example.com/ncaa-softball"
-NCAA_BASKETBALL_API_URL = "https://example.com/ncaa-basketball"
-OLYMPICS_API_URL = "https://example.com/olympics"
-SOCCER_API_URL = "https://example.com/soccer"
-INDIVIDUAL_SPORTS_API_URL = "https://example.com/individual"
+SPORTS_API_URL = "https://site.api.espn.com/apis/site/v2/sports"
+NCAA_SOFTBALL_API_URL = "https://ncaa-api.henrygd.me/scoreboard/softball/d1"
+NCAA_BASKETBALL_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+OLYMPICS_API_URL = "https://api.sportsdata.io/v3/olympics/scores/json/Competitions"
+SOCCER_API_URL = "https://api.football-data.org/v4/matches"
+INDIVIDUAL_SPORTS_API_URL = "https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard"
 WELLESLEY_SOFTBALL_URL = "https://athletics.wellesley.edu/sports/softball/schedule_text"
+# Set via `wrangler secret put` in real deploys:
+# SOCCER_API_TOKEN
+# OLYMPICS_API_KEY

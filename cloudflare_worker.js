@@ -74,6 +74,10 @@ export default {
         return await handleGetScore(searchParams, env);
       }
 
+      if (pathname === "/health" && request.method === "GET") {
+        return await handleHealth(env);
+      }
+
       return jsonResponse({ error: "Not found" }, 404);
     } catch (err) {
       return jsonResponse(
@@ -152,6 +156,104 @@ async function handleGetScore(searchParams, env) {
   }
 
   return jsonResponse(finalizeDisplayPayload(payload));
+}
+
+async function handleHealth(env) {
+  const today = new Date();
+  const ymd = formatDateYMD(today);
+  const compact = formatDateCompact(today);
+
+  const checks = {
+    control_kv: {
+      configured: !!env.CONTROL_KV,
+      reachable: !!env.CONTROL_KV,
+      detail: env.CONTROL_KV ? "KV binding present" : "Missing CONTROL_KV binding",
+    },
+    control_token: {
+      configured: !!env.CONTROL_TOKEN,
+      reachable: !!env.CONTROL_TOKEN,
+      detail: env.CONTROL_TOKEN ? "Token configured" : "Missing CONTROL_TOKEN secret",
+    },
+    sports_api: await probeEndpoint(env.SPORTS_API_URL, {
+      url: buildProUrl(env.SPORTS_API_URL || "", "nfl", false),
+      headers: { Accept: "application/json" },
+      name: "SPORTS_API_URL",
+    }),
+    ncaa_softball: await probeEndpoint(env.NCAA_SOFTBALL_API_URL, {
+      url: buildNcaaSoftballUrl(env.NCAA_SOFTBALL_API_URL || ""),
+      headers: { Accept: "application/json" },
+      name: "NCAA_SOFTBALL_API_URL",
+    }),
+    ncaa_basketball: await probeEndpoint(env.NCAA_BASKETBALL_API_URL, {
+      url: buildNcaaBasketballUrl(env.NCAA_BASKETBALL_API_URL || ""),
+      headers: { Accept: "application/json" },
+      name: "NCAA_BASKETBALL_API_URL",
+    }),
+    olympics: await probeEndpoint(env.OLYMPICS_API_URL, {
+      url: buildOlympicsUrl(env.OLYMPICS_API_URL || "", env, "olympic-basketball"),
+      headers: { Accept: "application/json" },
+      name: "OLYMPICS_API_URL",
+    }),
+    soccer: await probeEndpoint(env.SOCCER_API_URL, {
+      url: buildSoccerUrl(env.SOCCER_API_URL || "", "regular"),
+      headers: buildSoccerHeaders(env),
+      name: "SOCCER_API_URL",
+    }),
+    individual: await probeEndpoint(env.INDIVIDUAL_SPORTS_API_URL, {
+      url: buildIndividualSportUrl(env.INDIVIDUAL_SPORTS_API_URL || "", "tennis-singles", "pro"),
+      headers: { Accept: "application/json" },
+      name: "INDIVIDUAL_SPORTS_API_URL",
+    }),
+    wellesley: await probeEndpoint(env.WELLESLEY_SOFTBALL_URL || "https://athletics.wellesley.edu/sports/softball/schedule_text", {
+      url: env.WELLESLEY_SOFTBALL_URL || "https://athletics.wellesley.edu/sports/softball/schedule_text",
+      headers: { Accept: "text/plain,application/json" },
+      name: "WELLESLEY_SOFTBALL_URL",
+    }),
+  };
+
+  const requiredKeys = ["control_kv", "control_token", "sports_api", "ncaa_softball", "ncaa_basketball", "soccer", "wellesley"];
+  const required_ok = requiredKeys.every((k) => checks[k]?.configured && checks[k]?.reachable);
+  const optional_ok = ["olympics", "individual"].every((k) => !checks[k]?.configured || checks[k]?.reachable);
+
+  return jsonResponse({
+    status: required_ok ? (optional_ok ? "ok" : "degraded") : "error",
+    now_utc: ymd,
+    now_compact: compact,
+    checks,
+  });
+}
+
+async function probeEndpoint(configValue, options) {
+  const configured = !!configValue;
+  if (!configured) {
+    return {
+      configured: false,
+      reachable: false,
+      detail: `Missing ${options.name}`,
+    };
+  }
+
+  try {
+    const res = await fetch(options.url, {
+      method: "GET",
+      headers: options.headers || { Accept: "application/json" },
+      cf: { cacheTtl: 5, cacheEverything: false },
+    });
+
+    const reachable = res.status < 500;
+    return {
+      configured: true,
+      reachable,
+      status_code: res.status,
+      detail: reachable ? "endpoint reachable" : "server error",
+    };
+  } catch (e) {
+    return {
+      configured: true,
+      reachable: false,
+      detail: String(e?.message || e),
+    };
+  }
 }
 
 function finalizeDisplayPayload(payload) {
@@ -261,12 +363,12 @@ async function fetchSoccerScore(control, env, mode = "regular") {
     return makeSoccerMock(requestedTeam, mode, "SCHEDULED");
   }
 
-  const competition = mode === "world-cup" ? "world-cup" : "regular";
-  const upstreamUrl = `${baseUrl}?sport=soccer&competition=${encodeURIComponent(competition)}&team=${encodeURIComponent(requestedTeam)}`;
+  const upstreamUrl = buildSoccerUrl(baseUrl, mode);
+  const headers = buildSoccerHeaders(env);
 
   try {
     const resp = await fetch(upstreamUrl, {
-      headers: { Accept: "application/json" },
+      headers,
       cf: { cacheTtl: 20, cacheEverything: false },
     });
     if (!resp.ok) return makeSoccerMock(requestedTeam, mode, "SCHEDULED");
@@ -274,7 +376,8 @@ async function fetchSoccerScore(control, env, mode = "regular") {
     const data = await resp.json().catch(() => null);
     if (!data) return makeSoccerMock(requestedTeam, mode, "SCHEDULED");
 
-    const normalized = normalizeSoccerUpstream(data, requestedTeam, mode);
+    const adapted = adaptUpstreamPayload(data, { sport: "soccer", source: mode === "world-cup" ? "world-cup" : "pro" });
+    const normalized = normalizeSoccerUpstream(adapted, requestedTeam, mode);
     return normalized || makeSoccerMock(requestedTeam, mode, "SCHEDULED");
   } catch {
     return makeSoccerMock(requestedTeam, mode, "SCHEDULED");
@@ -373,9 +476,7 @@ async function fetchProScore(control, env) {
   }
 
   const wantsSuperBowl = isSuperBowlControl(control);
-  const upstreamUrl = wantsSuperBowl
-    ? `${baseUrl}?sport=${encodeURIComponent(control.sport)}&event=superbowl`
-    : `${baseUrl}?sport=${encodeURIComponent(control.sport)}&team=${encodeURIComponent(control.team)}`;
+  const upstreamUrl = buildProUrl(baseUrl, control.sport, wantsSuperBowl);
 
   try {
     const resp = await fetch(upstreamUrl, {
@@ -394,7 +495,9 @@ async function fetchProScore(control, env) {
       return makeProMock(control, "SCHEDULED");
     }
 
-    const normalized = normalizeProUpstream(data, control);
+    const adapted = adaptUpstreamPayload(data, { sport: control.sport, source: "pro" });
+
+    const normalized = normalizeProUpstream(adapted, control);
     return normalized || makeProMock(control, "SCHEDULED");
   } catch {
     return makeProMock(control, "SCHEDULED");
@@ -414,8 +517,7 @@ async function fetchIndividualSportScore(control, env, sourceOverride = "pro") {
     return makeIndividualSportMock(requested, sport, sourceOverride, "SCHEDULED");
   }
 
-  const olympic = sourceOverride === "olympics" ? "&source=olympics" : "";
-  const upstreamUrl = `${baseUrl}?sport=${encodeURIComponent(sport)}&team=${encodeURIComponent(requested)}${olympic}`;
+  const upstreamUrl = buildIndividualSportUrl(baseUrl, sport, sourceOverride);
 
   try {
     const resp = await fetch(upstreamUrl, {
@@ -432,7 +534,13 @@ async function fetchIndividualSportScore(control, env, sourceOverride = "pro") {
       return makeIndividualSportMock(requested, sport, sourceOverride, "SCHEDULED");
     }
 
-    const normalized = normalizeIndividualSportUpstream(data, requested, sport, sourceOverride);
+    const adapted = adaptUpstreamPayload(data, {
+      sport,
+      source: sourceOverride,
+      individual: true,
+    });
+
+    const normalized = normalizeIndividualSportUpstream(adapted, requested, sport, sourceOverride);
     return normalized || makeIndividualSportMock(requested, sport, sourceOverride, "SCHEDULED");
   } catch {
     return makeIndividualSportMock(requested, sport, sourceOverride, "SCHEDULED");
@@ -707,7 +815,7 @@ async function fetchOlympicsScore(control, env) {
     return makeOlympicsMock(team, sport, "SCHEDULED");
   }
 
-  const upstreamUrl = `${baseUrl}?source=olympics&sport=${encodeURIComponent(sport)}&team=${encodeURIComponent(team)}`;
+  const upstreamUrl = buildOlympicsUrl(baseUrl, env, sport);
 
   try {
     const resp = await fetch(upstreamUrl, {
@@ -726,7 +834,9 @@ async function fetchOlympicsScore(control, env) {
       return makeOlympicsMock(team, sport, "SCHEDULED");
     }
 
-    const normalized = normalizeOlympicsUpstream(data, team, sport);
+    const adapted = adaptUpstreamPayload(data, { sport, source: "olympics" });
+
+    const normalized = normalizeOlympicsUpstream(adapted, team, sport);
     return normalized || makeOlympicsMock(team, sport, "SCHEDULED");
   } catch {
     return makeOlympicsMock(team, sport, "SCHEDULED");
@@ -793,7 +903,7 @@ async function fetchNcaaBasketballScore(control, env) {
     return makeNcaaBasketballMock(team, "SCHEDULED");
   }
 
-  const upstreamUrl = `${baseUrl}?sport=cbb&team=${encodeURIComponent(team)}`;
+  const upstreamUrl = buildNcaaBasketballUrl(baseUrl);
 
   try {
     const resp = await fetch(upstreamUrl, {
@@ -812,7 +922,9 @@ async function fetchNcaaBasketballScore(control, env) {
       return makeNcaaBasketballMock(team, "SCHEDULED");
     }
 
-    const normalized = normalizeNcaaBasketballUpstream(data, team);
+    const adapted = adaptUpstreamPayload(data, { sport: "cbb", source: "ncaa-basketball" });
+
+    const normalized = normalizeNcaaBasketballUpstream(adapted, team);
     return normalized || makeNcaaBasketballMock(team, "SCHEDULED");
   } catch {
     return makeNcaaBasketballMock(team, "SCHEDULED");
@@ -865,7 +977,7 @@ async function fetchNcaaSoftballScore(control, env) {
     return makeNcaaSoftballMock(team, "SCHEDULED");
   }
 
-  const upstreamUrl = `${baseUrl}?sport=softball&team=${encodeURIComponent(team)}`;
+  const upstreamUrl = buildNcaaSoftballUrl(baseUrl);
 
   try {
     const resp = await fetch(upstreamUrl, {
@@ -884,11 +996,209 @@ async function fetchNcaaSoftballScore(control, env) {
       return makeNcaaSoftballMock(team, "SCHEDULED");
     }
 
-    const normalized = normalizeNcaaSoftballUpstream(data, team);
+    const adapted = adaptUpstreamPayload(data, { sport: "softball", source: "ncaa-softball" });
+
+    const normalized = normalizeNcaaSoftballUpstream(adapted, team);
     return normalized || makeNcaaSoftballMock(team, "SCHEDULED");
   } catch {
     return makeNcaaSoftballMock(team, "SCHEDULED");
   }
+}
+
+function buildSoccerHeaders(env) {
+  const headers = { Accept: "application/json" };
+  const token = env.SOCCER_API_TOKEN || env.FOOTBALL_DATA_API_TOKEN || "";
+  if (token) {
+    headers["X-Auth-Token"] = token;
+  }
+  return headers;
+}
+
+function buildSoccerUrl(baseUrl, mode) {
+  const now = new Date();
+  const ymd = formatDateYMD(now);
+
+  if (baseUrl.includes("football-data.org")) {
+    if (mode === "world-cup") {
+      return `https://api.football-data.org/v4/competitions/WC/matches?dateFrom=${ymd}&dateTo=${ymd}`;
+    }
+    return `https://api.football-data.org/v4/matches?dateFrom=${ymd}&dateTo=${ymd}`;
+  }
+
+  const competition = mode === "world-cup" ? "world-cup" : "regular";
+  return appendQuery(baseUrl, {
+    sport: "soccer",
+    competition,
+    date: ymd,
+  });
+}
+
+function buildProUrl(baseUrl, sport, wantsSuperBowl) {
+  const compact = formatDateCompact(new Date());
+  if (baseUrl.includes("site.api.espn.com") || baseUrl.includes("apis/site/v2/sports")) {
+    const path = espnSportPath(sport);
+    let url = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${compact}`;
+    if (wantsSuperBowl) {
+      url += "&seasontype=3";
+    }
+    return url;
+  }
+
+  return appendQuery(baseUrl, {
+    sport,
+    event: wantsSuperBowl ? "superbowl" : undefined,
+    date: compact,
+  });
+}
+
+function buildNcaaBasketballUrl(baseUrl) {
+  const compact = formatDateCompact(new Date());
+  if (baseUrl.includes("site.api.espn.com")) {
+    return appendQuery(baseUrl, { dates: compact });
+  }
+  return appendQuery(baseUrl, { sport: "cbb", dates: compact });
+}
+
+function buildNcaaSoftballUrl(baseUrl) {
+  const ymd = formatDateYMD(new Date());
+  if (baseUrl.includes("ncaa-api.henrygd.me")) {
+    return appendQuery(baseUrl, { date: ymd });
+  }
+  return appendQuery(baseUrl, { sport: "softball", date: ymd });
+}
+
+function buildOlympicsUrl(baseUrl, env, sport) {
+  const year = new Date().getUTCFullYear();
+  const key = env.OLYMPICS_API_KEY || env.SPORTSDATAIO_API_KEY || "";
+
+  if (baseUrl.includes("sportsdata.io")) {
+    const root = baseUrl.replace(/\/$/, "");
+    const candidate = root.includes("/Competitions/") ? root : `${root}/Competitions/${year}`;
+    return appendQuery(candidate, key ? { key } : {});
+  }
+
+  return appendQuery(baseUrl, {
+    source: "olympics",
+    sport,
+    year,
+    key: key || undefined,
+  });
+}
+
+function buildIndividualSportUrl(baseUrl, sport, sourceOverride) {
+  const compact = formatDateCompact(new Date());
+
+  if (baseUrl.includes("site.api.espn.com") && sport === "tennis-singles") {
+    return appendQuery(baseUrl, { dates: compact });
+  }
+
+  if (sourceOverride === "olympics") {
+    return appendQuery(baseUrl, { sport, source: "olympics", dates: compact });
+  }
+  return appendQuery(baseUrl, { sport, dates: compact });
+}
+
+function espnSportPath(sport) {
+  const s = (sport || "").toString().trim().toLowerCase();
+  if (s === "nfl") return "football/nfl";
+  if (s === "nba") return "basketball/nba";
+  if (s === "mlb") return "baseball/mlb";
+  if (s === "cbb") return "basketball/mens-college-basketball";
+  return "football/nfl";
+}
+
+function appendQuery(baseUrl, params) {
+  const url = new URL(baseUrl);
+  Object.keys(params || {}).forEach((k) => {
+    const val = params[k];
+    if (val !== undefined && val !== null && val !== "") {
+      url.searchParams.set(k, String(val));
+    }
+  });
+  return url.toString();
+}
+
+function formatDateYMD(d) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function formatDateCompact(d) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}${m}${day}`;
+}
+
+function adaptUpstreamPayload(data, hint = {}) {
+  if (!data || typeof data !== "object") return data;
+
+  if (Array.isArray(data?.events) && data.events.length) {
+    return adaptEspnScoreboard(data);
+  }
+
+  if (Array.isArray(data?.matches) && (data.count !== undefined || data.filters || data.competition)) {
+    return adaptFootballDataMatches(data);
+  }
+
+  if (Array.isArray(data?.games) || Array.isArray(data?.matches) || Array.isArray(data?.leaderboard) || Array.isArray(data?.players)) {
+    return data;
+  }
+
+  return data;
+}
+
+function adaptEspnScoreboard(data) {
+  const games = [];
+  for (const event of data.events || []) {
+    const comp = (event.competitions && event.competitions[0]) || null;
+    if (!comp) continue;
+    const competitors = comp.competitors || [];
+    const homeC = competitors.find((c) => (c.homeAway || "").toLowerCase() === "home") || competitors[0];
+    const awayC = competitors.find((c) => (c.homeAway || "").toLowerCase() === "away") || competitors[1];
+    if (!homeC || !awayC) continue;
+
+    const homeTeam = homeC.team || {};
+    const awayTeam = awayC.team || {};
+
+    games.push({
+      home: homeTeam.abbreviation || homeTeam.shortDisplayName || homeTeam.displayName || "HOME",
+      away: awayTeam.abbreviation || awayTeam.shortDisplayName || awayTeam.displayName || "AWAY",
+      home_score: parseNullableInt(homeC.score),
+      away_score: parseNullableInt(awayC.score),
+      status: normalizeStatus((comp.status && comp.status.type && (comp.status.type.name || comp.status.type.state)) || event.status?.type?.name || "SCHEDULED"),
+      game_time: comp.date || event.date || null,
+      at: "Neutral",
+      home_primary: normalizeHexColor(homeTeam.color),
+      home_secondary: normalizeHexColor(homeTeam.alternateColor),
+      away_primary: normalizeHexColor(awayTeam.color),
+      away_secondary: normalizeHexColor(awayTeam.alternateColor),
+      event_name: event.name || null,
+      event: event.shortName || event.name || null,
+      competition: data.leagues?.[0]?.name || null,
+    });
+  }
+  return { games };
+}
+
+function adaptFootballDataMatches(data) {
+  const games = [];
+  for (const m of data.matches || []) {
+    games.push({
+      home: m.homeTeam?.tla || m.homeTeam?.shortName || m.homeTeam?.name || "HOME",
+      away: m.awayTeam?.tla || m.awayTeam?.shortName || m.awayTeam?.name || "AWAY",
+      home_score: parseNullableInt(m.score?.fullTime?.home ?? m.score?.halfTime?.home),
+      away_score: parseNullableInt(m.score?.fullTime?.away ?? m.score?.halfTime?.away),
+      status: normalizeStatus(m.status || "SCHEDULED"),
+      game_time: m.utcDate || null,
+      at: "Neutral",
+      event_name: m.competition?.name || null,
+      competition: m.competition?.name || null,
+    });
+  }
+  return { games };
 }
 
 function normalizeNcaaSoftballUpstream(data, requestedTeam) {
@@ -1240,6 +1550,10 @@ function normalizeHeadToHeadGame({ game, requestedTeam, source, sport, gameTime 
   const homeScore = parseNullableInt(game.home_score ?? game.homeScore);
   const awayScore = parseNullableInt(game.away_score ?? game.awayScore);
   const isTeamHome = preferred === home;
+  const homePrimary = normalizeHexColor(game.home_primary || game.homePrimary || game.home_color || game.homeColor);
+  const homeSecondary = normalizeHexColor(game.home_secondary || game.homeSecondary || game.home_alt || game.homeAlt);
+  const awayPrimary = normalizeHexColor(game.away_primary || game.awayPrimary || game.away_color || game.awayColor);
+  const awaySecondary = normalizeHexColor(game.away_secondary || game.awaySecondary || game.away_alt || game.awayAlt);
 
   return {
     source,
@@ -1251,6 +1565,10 @@ function normalizeHeadToHeadGame({ game, requestedTeam, source, sport, gameTime 
     status: normalizeStatus(game.status || game.state || game.game_status || "SCHEDULED"),
     game_time: gameTime || null,
     at: normalizeAt(game.at || game.location || (isTeamHome ? "Home" : "Away")),
+    team_primary: isTeamHome ? homePrimary : awayPrimary,
+    team_secondary: isTeamHome ? homeSecondary : awaySecondary,
+    opp_primary: isTeamHome ? awayPrimary : homePrimary,
+    opp_secondary: isTeamHome ? awaySecondary : homeSecondary,
   };
 }
 
@@ -1352,13 +1670,13 @@ function withTeamMeta(payload, game = null) {
   const sport = (payload?.sport || "").toString().trim().toLowerCase();
   const teamMeta = resolveTeamMeta(payload?.team, sport, {
     abbr: game?.team_abbr || game?.teamAbbr,
-    primary: game?.team_primary || game?.teamPrimary || game?.primary,
-    secondary: game?.team_secondary || game?.teamSecondary || game?.secondary,
+    primary: payload?.team_primary || game?.team_primary || game?.teamPrimary || game?.primary,
+    secondary: payload?.team_secondary || game?.team_secondary || game?.teamSecondary || game?.secondary,
   });
   const oppMeta = resolveTeamMeta(payload?.opponent, sport, {
     abbr: game?.opponent_abbr || game?.opp_abbr || game?.oppAbbr,
-    primary: game?.opp_primary || game?.opponent_primary || game?.oppPrimary,
-    secondary: game?.opp_secondary || game?.opponent_secondary || game?.oppSecondary,
+    primary: payload?.opp_primary || game?.opp_primary || game?.opponent_primary || game?.oppPrimary,
+    secondary: payload?.opp_secondary || game?.opp_secondary || game?.opponent_secondary || game?.oppSecondary,
   });
 
   return {
@@ -1492,13 +1810,13 @@ function toHex2(n) {
 function normalizeStatus(value) {
   const raw = (value || "").toString().trim().toUpperCase();
   if (!raw) return "SCHEDULED";
-  if (["LIVE", "IN_PROGRESS", "IN-PROGRESS", "Q1", "Q2", "Q3", "Q4", "HALF"].includes(raw)) {
+  if (["LIVE", "IN_PROGRESS", "IN-PROGRESS", "IN PLAY", "INPLAY", "PAUSED", "Q1", "Q2", "Q3", "Q4", "HALF"].includes(raw)) {
     return "LIVE";
   }
-  if (["FINAL", "FT", "ENDED", "COMPLETE", "COMPLETED"].includes(raw)) {
+  if (["FINAL", "FT", "ENDED", "COMPLETE", "COMPLETED", "FINISHED", "AFTER_EXTRA_TIME", "AFTER_PENALTIES"].includes(raw)) {
     return "FINAL";
   }
-  if (["NONE", "OFF", "NO_GAME", "NO-GAME"].includes(raw)) {
+  if (["NONE", "OFF", "NO_GAME", "NO-GAME", "POSTPONED", "CANCELLED", "SUSPENDED"].includes(raw)) {
     return "NONE";
   }
   return "SCHEDULED";

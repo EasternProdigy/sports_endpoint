@@ -1,11 +1,13 @@
 # Copy to .dev.vars for local `wrangler dev`
 CONTROL_TOKEN=replace-me
+SOCCER_API_TOKEN=replace-me
+OLYMPICS_API_KEY=replace-me
 
 # Optional for local testing (can also stay in wrangler.toml [vars])
-SPORTS_API_URL=https://example.com/sports
-NCAA_SOFTBALL_API_URL=https://example.com/ncaa-softball
-NCAA_BASKETBALL_API_URL=https://example.com/ncaa-basketball
-OLYMPICS_API_URL=https://example.com/olympics
-SOCCER_API_URL=https://example.com/soccer
-INDIVIDUAL_SPORTS_API_URL=https://example.com/individual
+SPORTS_API_URL=https://site.api.espn.com/apis/site/v2/sports
+NCAA_SOFTBALL_API_URL=https://ncaa-api.henrygd.me/scoreboard/softball/d1
+NCAA_BASKETBALL_API_URL=https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard
+OLYMPICS_API_URL=https://api.sportsdata.io/v3/olympics/scores/json/Competitions
+SOCCER_API_URL=https://api.football-data.org/v4/matches
+INDIVIDUAL_SPORTS_API_URL=https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard
 WELLESLEY_SOFTBALL_URL=https://athletics.wellesley.edu/sports/softball/schedule_text
