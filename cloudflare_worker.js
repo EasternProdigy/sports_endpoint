@@ -48,7 +48,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.22-ui3";
+const WORKER_VERSION = "2026.02.22-ui5";
 
 export default {
   async fetch(request, env) {
@@ -226,6 +226,17 @@ function renderControlUiHtml(url) {
         border-radius: 12px;
         margin: 0;
       }
+      .currentBox {
+        margin: 8px 0 10px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--field);
+        color: var(--fieldText);
+        font-size: 13px;
+        line-height: 1.3;
+      }
+      .currentBox .k { color: var(--muted); font-weight: 800; margin-right: 8px; }
       .toggleRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
       .pill { display: inline-flex; align-items: center; gap: 10px; }
       .switch { width: 46px; height: 28px; border-radius: 999px; border: 1px solid var(--border); background: rgba(127,127,127,0.12); position: relative; }
@@ -358,7 +369,6 @@ function renderControlUiHtml(url) {
             <option value="nhl">NHL</option>
             <option value="softball">NCAA Softball</option>
             <option value="cbb">NCAA Basketball</option>
-            <option value="soccer">Soccer</option>
           </select>
 
           <label for="team">Team</label>
@@ -427,6 +437,7 @@ function renderControlUiHtml(url) {
 
       <div class="card">
         <div class="muted">Response</div>
+        <div id="currentSummary" class="currentBox"><span class="k">Current</span><span id="currentText">(not loaded yet)</span></div>
         <pre id="out">(none)</pre>
       </div>
 
@@ -530,9 +541,90 @@ function renderControlUiHtml(url) {
           ["Seattle Kraken", "SEA"], ["St. Louis Blues", "STL"], ["Tampa Bay Lightning", "TB"], ["Toronto Maple Leafs", "TOR"],
           ["Vancouver Canucks", "VAN"], ["Vegas Golden Knights", "VGK"], ["Washington Capitals", "WSH"], ["Winnipeg Jets", "WPG"],
         ],
-        softball: [["Wellesley", "WEL"]],
-        cbb: [],
-        soccer: [],
+        softball: [
+          ["Babson College", "BAB"],
+          ["Clark University", "CLK"],
+          ["Coast Guard Academy", "CGA"],
+          ["Emerson College", "EME"],
+          ["MIT", "MIT"],
+          ["Mount Holyoke College", "MHC"],
+          ["Salve Regina University", "SRU"],
+          ["Smith College", "SMI"],
+          ["Springfield College", "SPR"],
+          ["Wellesley College", "WEL"],
+          ["Wheaton College", "WHE"],
+          ["Worcester Polytechnic Institute", "WPI"],
+        ],
+        cbb: [
+          ["Duke", "Duke"],
+          ["Alabama", "Alabama"],
+          ["Wisconsin", "Wisconsin"],
+          ["Arizona", "Arizona"],
+          ["Oregon", "Oregon"],
+          ["BYU", "BYU"],
+          ["Saint Mary's", "Saint Mary's"],
+          ["Mississippi State", "Mississippi State"],
+          ["Baylor", "Baylor"],
+          ["Vanderbilt", "Vanderbilt"],
+          ["VCU", "VCU"],
+          ["Liberty", "Liberty"],
+          ["Akron", "Akron"],
+          ["Montana", "Montana"],
+          ["Robert Morris", "Robert Morris"],
+          ["American", "American"],
+          ["Mount St. Mary's", "Mount St. Mary's"],
+          ["Florida", "Florida"],
+          ["St. John's", "St. John's"],
+          ["Texas Tech", "Texas Tech"],
+          ["Maryland", "Maryland"],
+          ["Memphis", "Memphis"],
+          ["Missouri", "Missouri"],
+          ["Kansas", "Kansas"],
+          ["UConn", "UConn"],
+          ["Oklahoma", "Oklahoma"],
+          ["Arkansas", "Arkansas"],
+          ["Drake", "Drake"],
+          ["Colorado State", "Colorado State"],
+          ["Grand Canyon", "Grand Canyon"],
+          ["UNC Wilmington", "UNC Wilmington"],
+          ["Omaha", "Omaha"],
+          ["Norfolk State", "Norfolk State"],
+          ["Auburn", "Auburn"],
+          ["Michigan State", "Michigan State"],
+          ["Iowa State", "Iowa State"],
+          ["Texas A&M", "Texas A&M"],
+          ["Michigan", "Michigan"],
+          ["Ole Miss", "Ole Miss"],
+          ["Marquette", "Marquette"],
+          ["Louisville", "Louisville"],
+          ["Creighton", "Creighton"],
+          ["New Mexico", "New Mexico"],
+          ["San Diego State", "San Diego State"],
+          ["North Carolina", "North Carolina"],
+          ["UC San Diego", "UC San Diego"],
+          ["Yale", "Yale"],
+          ["Lipscomb", "Lipscomb"],
+          ["Bryant", "Bryant"],
+          ["Alabama State", "Alabama State"],
+          ["Saint Francis", "Saint Francis"],
+          ["Houston", "Houston"],
+          ["Tennessee", "Tennessee"],
+          ["Kentucky", "Kentucky"],
+          ["Purdue", "Purdue"],
+          ["Clemson", "Clemson"],
+          ["Illinois", "Illinois"],
+          ["UCLA", "UCLA"],
+          ["Gonzaga", "Gonzaga"],
+          ["Georgia", "Georgia"],
+          ["Utah State", "Utah State"],
+          ["Texas", "Texas"],
+          ["Xavier", "Xavier"],
+          ["McNeese", "McNeese"],
+          ["High Point", "High Point"],
+          ["Troy", "Troy"],
+          ["Wofford", "Wofford"],
+          ["SIU Edwardsville", "SIU Edwardsville"],
+        ],
       };
 
       const sportToSource = {
@@ -542,17 +634,28 @@ function renderControlUiHtml(url) {
         nhl: "pro",
         softball: "ncaa-softball",
         cbb: "ncaa-basketball",
-        soccer: "pro",
       };
 
       function teamCookieKey(sport) {
         return "ui_team_" + String(sport || "").toLowerCase();
       }
 
+      function formatTeamDisplay(name, abbr) {
+        const n = String(name || "").trim();
+        const a = String(abbr || "").trim();
+        if (!a) return n;
+        if (n && a && n.toLowerCase() === a.toLowerCase()) return n;
+        return n + " (" + a + ")";
+      }
+
       function defaultTeamForSport(sport) {
-        if (sport === "softball") return "Wellesley (WEL)";
+        if (sport === "softball") return "Wellesley College (WEL)";
+        if (sport === "nfl") return "Dallas Cowboys (DAL)";
+        if (sport === "nba") return "Dallas Mavericks (DAL)";
+        if (sport === "mlb") return "Texas Rangers (TEX)";
+        if (sport === "nhl") return "Dallas Stars (DAL)";
         const arr = teamOptionsForSport(sport);
-        if (arr && arr.length) return arr[0][0] + " (" + arr[0][1] + ")";
+        if (arr && arr.length) return formatTeamDisplay(arr[0][0], arr[0][1]);
         return "";
       }
 
@@ -605,10 +708,11 @@ function renderControlUiHtml(url) {
         for (const [name, abbr] of filtered.slice(0, 60)) {
           const div = document.createElement("div");
           div.className = "comboItem";
-          div.textContent = name + " (" + abbr + ")";
+          const label = formatTeamDisplay(name, abbr);
+          div.textContent = label;
           div.addEventListener("click", () => {
-            $("team").value = div.textContent;
-            state.team = div.textContent;
+            $("team").value = label;
+            state.team = label;
             cookieSet(teamCookieKey(state.sport), state.team);
             closeTeamDropdown();
           });
@@ -626,7 +730,7 @@ function renderControlUiHtml(url) {
       }
 
       function parseTeamAbbr(input) {
-        const m = String(input || "").match(/\(([A-Z0-9]{2,4})\)\s*$/);
+        const m = String(input || "").match(/\(([A-Z0-9]{2,10})\)\s*$/);
         if (m) return m[1];
         return String(input || "").trim().toUpperCase();
       }
@@ -640,7 +744,7 @@ function renderControlUiHtml(url) {
       // Remove stale keys from older UI versions
       try { document.cookie = "ui_team=; path=/; max-age=0"; } catch {}
 
-      state.team = cookieGet(teamCookieKey(state.sport)) || defaultTeamForSport(state.sport) || "Dallas Cowboys (DAL)";
+      state.team = cookieGet(teamCookieKey(state.sport)) || defaultTeamForSport(state.sport) || "";
 
       $("token").value = state.token;
       $("device").value = state.device;
@@ -696,6 +800,122 @@ function renderControlUiHtml(url) {
 
       function show(obj) { out.textContent = JSON.stringify(obj, null, 2); }
 
+      function teamDisplayFromControl(sport, teamCode) {
+        const code = String(teamCode || "").trim().toUpperCase();
+        if (!code) return "";
+
+        const arr = teamOptionsForSport(sport);
+        for (const [name, abbr] of arr) {
+          const a = String(abbr || "").trim().toUpperCase();
+          const n = String(name || "").trim().toUpperCase();
+          if (a && a === code) return formatTeamDisplay(name, abbr);
+          if (sport === "cbb" && n && n === code) return formatTeamDisplay(name, abbr);
+        }
+
+        // Fallback: show the raw code/name.
+        return code;
+      }
+
+      function setCurrentSummary(control) {
+        const el = $("currentText");
+        if (!el) return;
+
+        if (!control || typeof control !== "object") {
+          el.textContent = "(unknown)";
+          return;
+        }
+
+        const device = String(control.device_id || "").trim() || "matrix-01";
+        const sport = String(control.sport || "").trim().toLowerCase();
+        const source = String(control.source || "").trim().toLowerCase();
+        const mode = String(control.mode || "auto").trim().toLowerCase();
+        const tz = String(control.tz || "ct").trim().toLowerCase() || "ct";
+        const teamRaw = String(control.team || "").trim();
+        const teamDisp = teamDisplayFromControl(sport, teamRaw) || teamRaw;
+
+        if (mode === "idle") {
+          el.textContent = "Clock · " + tz.toUpperCase() + " · device " + device;
+          return;
+        }
+
+        const sportLabel = (sport === "nfl") ? "NFL"
+          : (sport === "nba") ? "NBA"
+          : (sport === "mlb") ? "MLB"
+          : (sport === "nhl") ? "NHL"
+          : (sport === "softball") ? "NCAA Softball"
+          : (sport === "cbb") ? "NCAA Basketball"
+          : String(sport || "").toUpperCase();
+
+        const src = source ? (" · src " + source) : "";
+        el.textContent = "Scoreboard · " + sportLabel + (teamDisp ? (" · " + teamDisp) : "") + " · device " + device + src;
+      }
+
+      function applyControlToUi(control) {
+        if (!control || typeof control !== "object") return;
+
+        const device_id = String(control.device_id || "").trim() || "matrix-01";
+        const sport = String(control.sport || "").trim() || "nfl";
+        const source = String(control.source || "").trim() || (sportToSource[sport] || "pro");
+        const team = String(control.team || "").trim();
+        const mode = String(control.mode || "auto").trim().toLowerCase();
+        const tz = String(control.tz || "ct").trim().toLowerCase() || "ct";
+
+        // Update state + cookies first
+        state.device = device_id;
+        state.sport = sport;
+        state.source = source;
+        state.tz = tz;
+        state.display = mode === "idle" ? "clock" : "scoreboard";
+
+        cookieSet("ui_device", device_id);
+        cookieSet("ui_sport", sport);
+        cookieSet("ui_source", source);
+        cookieSet("ui_tz", tz);
+
+        // If server source doesn't match the sport default mapping, mark it as overridden.
+        const inferred = sportToSource[sport] || "pro";
+        state.sourceOverride = source !== inferred;
+        cookieSet("ui_src_override", state.sourceOverride ? "1" : "0");
+
+        // Reflect in UI fields (setting .value does not trigger change events)
+        $("device").value = device_id;
+        $("sport").value = sport;
+        $("source").value = source;
+        $("tz").value = tz;
+        applyDisplayMode();
+
+        const teamDisplay = teamDisplayFromControl(sport, team);
+        state.team = teamDisplay;
+        $("team").value = teamDisplay;
+        cookieSet(teamCookieKey(sport), teamDisplay);
+
+        setCurrentSummary(control);
+      }
+
+      // On load, read back the saved control so the UI reflects what's actually stored.
+      (async () => {
+        try {
+          const device = $("device").value.trim() || "matrix-01";
+          const resp = await getJson("/control?device_id=" + encodeURIComponent(device));
+          if (resp?.status === 200 && resp?.json) {
+            applyControlToUi(resp.json);
+            return;
+          }
+        } catch {}
+
+        // Fallback: reflect local form state.
+        try {
+          setCurrentSummary({
+            device_id: $("device").value.trim() || "matrix-01",
+            sport: $("sport").value,
+            source: $("source").value,
+            team: parseTeamAbbr($("team").value),
+            mode: state.display === "clock" ? "idle" : "auto",
+            tz: $("tz").value || "ct",
+          });
+        } catch {}
+      })();
+
       function setSendState(kind, label) {
         const btn = $("send");
         btn.classList.remove("ok", "err", "loading");
@@ -706,10 +926,23 @@ function renderControlUiHtml(url) {
       $("send").addEventListener("click", async () => {
         try {
           setSendState("loading", "Sending…");
-          show({ sending: buildControlPayload({ forceClock: false }) });
-          const resp = await postControl(buildControlPayload({ forceClock: false }));
+          const payload = buildControlPayload({ forceClock: false });
+          show({ sending: payload });
+          const resp = await postControl(payload);
+
+          // Always show the response (advanced users), but also keep the form in sync.
           show(resp);
+
           if (resp && resp.status >= 200 && resp.status < 300) {
+            const control = resp?.json?.control;
+            if (control) {
+              applyControlToUi(control);
+            } else {
+              // Fallback: read back current control.
+              const device = $("device").value.trim() || "matrix-01";
+              const readback = await getJson("/control?device_id=" + encodeURIComponent(device));
+              if (readback?.status === 200 && readback?.json) applyControlToUi(readback.json);
+            }
             setSendState("ok", "Sent");
             setTimeout(() => setSendState("", "Send"), 900);
           } else {
@@ -725,8 +958,13 @@ function renderControlUiHtml(url) {
 
       $("setClock").addEventListener("click", async () => {
         try {
-          show({ sending: buildControlPayload({ forceClock: true }) });
-          show(await postControl(buildControlPayload({ forceClock: true })));
+          const payload = buildControlPayload({ forceClock: true });
+          show({ sending: payload });
+          const resp = await postControl(payload);
+          show(resp);
+          if (resp && resp.status >= 200 && resp.status < 300 && resp?.json?.control) {
+            applyControlToUi(resp.json.control);
+          }
         } catch (e) {
           show({ error: String(e && e.message ? e.message : e) });
         }
@@ -734,7 +972,11 @@ function renderControlUiHtml(url) {
 
       $("getControl").addEventListener("click", async () => {
         const device = $("device").value.trim();
-        show(await getJson("/control?device_id=" + encodeURIComponent(device)));
+        const resp = await getJson("/control?device_id=" + encodeURIComponent(device));
+        show(resp);
+        if (resp?.status === 200 && resp?.json) {
+          applyControlToUi(resp.json);
+        }
       });
 
       $("getScore").addEventListener("click", async () => {
@@ -770,7 +1012,7 @@ function renderControlUiHtml(url) {
         inferSource();
 
         const remembered = cookieGet(teamCookieKey(state.sport));
-        state.team = state.sport === "softball" ? "Wellesley (WEL)" : (remembered || defaultTeamForSport(state.sport));
+        state.team = remembered || defaultTeamForSport(state.sport);
         if (state.team) {
           $("team").value = state.team;
           cookieSet(teamCookieKey(state.sport), state.team);
@@ -1885,7 +2127,7 @@ function adaptUpstreamPayload(data, hint = {}) {
   if (!data || typeof data !== "object") return data;
 
   if (Array.isArray(data?.events) && data.events.length) {
-    return adaptEspnScoreboard(data);
+    return adaptEspnScoreboard(data, hint);
   }
 
   if (Array.isArray(data?.matches) && (data.count !== undefined || data.filters || data.competition)) {
@@ -1899,7 +2141,11 @@ function adaptUpstreamPayload(data, hint = {}) {
   return data;
 }
 
-function adaptEspnScoreboard(data) {
+function adaptEspnScoreboard(data, hint = {}) {
+  const hintedSport = (hint?.sport || "").toString().trim().toLowerCase();
+  const hintedSource = (hint?.source || "").toString().trim().toLowerCase();
+  const preferNames = hintedSport === "cbb" || hintedSource === "ncaa-basketball";
+
   const games = [];
   for (const event of data.events || []) {
     const comp = (event.competitions && event.competitions[0]) || null;
@@ -1912,9 +2158,14 @@ function adaptEspnScoreboard(data) {
     const homeTeam = homeC.team || {};
     const awayTeam = awayC.team || {};
 
+    const pickTeamKey = (t) => {
+      if (preferNames) return t.shortDisplayName || t.displayName || t.abbreviation || "TEAM";
+      return t.abbreviation || t.shortDisplayName || t.displayName || "TEAM";
+    };
+
     games.push({
-      home: homeTeam.abbreviation || homeTeam.shortDisplayName || homeTeam.displayName || "HOME",
-      away: awayTeam.abbreviation || awayTeam.shortDisplayName || awayTeam.displayName || "AWAY",
+      home: pickTeamKey(homeTeam) || "HOME",
+      away: pickTeamKey(awayTeam) || "AWAY",
       home_score: parseNullableInt(homeC.score),
       away_score: parseNullableInt(awayC.score),
       status: normalizeStatus((comp.status && comp.status.type && (comp.status.type.name || comp.status.type.state)) || event.status?.type?.name || "SCHEDULED"),
@@ -2596,6 +2847,7 @@ function jsonResponse(data, status = 200) {
     status,
     headers: {
       "Content-Type": "application/json",
+      "Cache-Control": "no-store",
       ...CORS_HEADERS,
     },
   });
