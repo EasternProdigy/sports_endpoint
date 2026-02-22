@@ -62,6 +62,14 @@ export default {
     }
 
     try {
+      if (pathname === "/" && request.method === "GET") {
+        return Response.redirect(url.origin + "/ui", 302);
+      }
+
+      if (pathname === "/ui" && request.method === "GET") {
+        return htmlResponse(renderControlUiHtml(url));
+      }
+
       if (pathname === "/control" && request.method === "POST") {
         return await handlePostControl(request, env);
       }
@@ -90,6 +98,190 @@ export default {
     }
   },
 };
+
+function htmlResponse(html, status = 200) {
+  return new Response(html, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function renderControlUiHtml(url) {
+  const deviceId = (url.searchParams.get("device_id") || "matrix-01").replace(/[^a-zA-Z0-9_-]/g, "");
+  const baseUrl = url.origin;
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Matrix Scoreboard Control</title>
+    <style>
+      :root { color-scheme: light; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 16px; }
+      .wrap { max-width: 520px; margin: 0 auto; }
+      h1 { font-size: 18px; margin: 0 0 12px; }
+      .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin: 12px 0; }
+      label { display: block; font-size: 12px; margin: 10px 0 6px; color: #333; }
+      input, select { width: 100%; font-size: 16px; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+      button { font-size: 16px; padding: 12px; border-radius: 10px; border: 1px solid #333; background: #111; color: #fff; }
+      button.secondary { background: #fff; color: #111; }
+      .muted { font-size: 12px; color: #666; line-height: 1.35; }
+      pre { white-space: pre-wrap; word-wrap: break-word; font-size: 12px; background: #f7f7f7; border: 1px solid #eee; padding: 10px; border-radius: 10px; }
+      .mode { display: flex; gap: 14px; align-items: center; margin-top: 8px; }
+      .mode input { width: auto; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Matrix Scoreboard Control</h1>
+      <div class="muted">Controls: <code>${baseUrl}</code></div>
+
+      <div class="card">
+        <div class="row">
+          <div>
+            <label for="device">Device ID</label>
+            <input id="device" value="${deviceId}" autocapitalize="none" />
+          </div>
+          <div>
+            <label for="token">Control Token</label>
+            <input id="token" placeholder="Bearer token" autocapitalize="none" />
+          </div>
+        </div>
+
+        <div class="mode">
+          <label style="margin:0;">Mode:</label>
+          <label style="margin:0;"><input type="radio" name="mode" value="scores" checked /> Scores</label>
+          <label style="margin:0;"><input type="radio" name="mode" value="clock" /> Clock only</label>
+        </div>
+
+        <label for="source">Source</label>
+        <select id="source">
+          <option value="wellesley">wellesley</option>
+          <option value="pro" selected>pro</option>
+          <option value="ncaa-softball">ncaa-softball</option>
+          <option value="ncaa-basketball">ncaa-basketball</option>
+          <option value="olympics">olympics</option>
+          <option value="world-cup">world-cup</option>
+        </select>
+
+        <div class="row">
+          <div>
+            <label for="sport">Sport</label>
+            <select id="sport">
+              <option value="nfl" selected>nfl</option>
+              <option value="nba">nba</option>
+              <option value="mlb">mlb</option>
+              <option value="nhl">nhl</option>
+              <option value="softball">softball</option>
+              <option value="soccer">soccer</option>
+              <option value="golf">golf</option>
+              <option value="tennis-singles">tennis-singles</option>
+            </select>
+          </div>
+          <div>
+            <label for="team">Team</label>
+            <input id="team" value="DAL" autocapitalize="characters" />
+          </div>
+        </div>
+
+        <div class="btns">
+          <button id="apply">Apply</button>
+          <button class="secondary" id="idle">Set Clock</button>
+        </div>
+        <div class="btns" style="margin-top:10px;">
+          <button class="secondary" id="getControl">Get Control</button>
+          <button class="secondary" id="getScore">Get Score</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="muted">Response</div>
+        <pre id="out">(none)</pre>
+      </div>
+
+      <div class="muted">Tip: the token is stored only in your browser (localStorage) on this device.</div>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const out = $("out");
+      const key = "matrix-control-token";
+      $("token").value = localStorage.getItem(key) || "";
+
+      function modeValue() {
+        const el = document.querySelector('input[name="mode"]:checked');
+        return el ? el.value : "scores";
+      }
+
+      function buildControlPayload(forceClock) {
+        const device_id = $("device").value.trim();
+        const source = $("source").value.trim();
+        const sport = $("sport").value.trim();
+        const team = $("team").value.trim().toUpperCase();
+        const mode = forceClock || modeValue() === "clock" ? "idle" : "auto";
+        return { device_id, source, sport, team, mode };
+      }
+
+      async function postControl(payload) {
+        const token = $("token").value.trim();
+        if (token) localStorage.setItem(key, token);
+        const res = await fetch("/control", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": token ? (token.startsWith("Bearer ") ? token : ("Bearer " + token)) : "",
+          },
+          body: JSON.stringify(payload),
+        });
+        const txt = await res.text();
+        try { return { status: res.status, json: JSON.parse(txt) }; } catch { return { status: res.status, text: txt }; }
+      }
+
+      async function getJson(path) {
+        const res = await fetch(path, { method: "GET" });
+        const txt = await res.text();
+        try { return { status: res.status, json: JSON.parse(txt) }; } catch { return { status: res.status, text: txt }; }
+      }
+
+      function show(obj) { out.textContent = JSON.stringify(obj, null, 2); }
+
+      $("apply").addEventListener("click", async () => {
+        try {
+          show({ sending: buildControlPayload(false) });
+          show(await postControl(buildControlPayload(false)));
+        } catch (e) {
+          show({ error: String(e && e.message ? e.message : e) });
+        }
+      });
+
+      $("idle").addEventListener("click", async () => {
+        try {
+          show({ sending: buildControlPayload(true) });
+          show(await postControl(buildControlPayload(true)));
+        } catch (e) {
+          show({ error: String(e && e.message ? e.message : e) });
+        }
+      });
+
+      $("getControl").addEventListener("click", async () => {
+        const device = $("device").value.trim();
+        show(await getJson("/control?device_id=" + encodeURIComponent(device)));
+      });
+
+      $("getScore").addEventListener("click", async () => {
+        const device = $("device").value.trim();
+        show(await getJson("/score?device_id=" + encodeURIComponent(device)));
+      });
+    </script>
+  </body>
+</html>`;
+}
 
 async function handlePostControl(request, env) {
   const auth = request.headers.get("Authorization") || "";
