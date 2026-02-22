@@ -47,6 +47,8 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
+const WORKER_VERSION = "2026.02.22-ui1";
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -66,8 +68,12 @@ export default {
         return Response.redirect(url.origin + "/ui", 302);
       }
 
-      if (pathname === "/ui" && request.method === "GET") {
+      if ((pathname === "/ui" || pathname === "/ui/") && request.method === "GET") {
         return htmlResponse(renderControlUiHtml(url));
+      }
+
+      if (pathname === "/__version" && request.method === "GET") {
+        return jsonResponse({ worker_version: WORKER_VERSION });
       }
 
       if (pathname === "/control" && request.method === "POST") {
@@ -408,6 +414,7 @@ async function handleHealth(env) {
   const optional_ok = ["olympics", "individual"].every((k) => !checks[k]?.configured || checks[k]?.reachable);
 
   return jsonResponse({
+    worker_version: WORKER_VERSION,
     status: required_ok ? (optional_ok ? "ok" : "degraded") : "error",
     now_utc: ymd,
     now_compact: compact,
