@@ -48,7 +48,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.22-ui5";
+const WORKER_VERSION = "2026.02.22-ui7";
 
 export default {
   async fetch(request, env) {
@@ -427,10 +427,12 @@ function renderControlUiHtml(url) {
         </select>
 
         <div class="row" style="margin-top:10px;">
-          <button class="secondary" id="setClock" type="button">Set Clock</button>
-          <button class="secondary" id="getControl" type="button">Get Control</button>
+          <button class="secondary" id="getHealth" type="button">Health / Version</button>
+          <button class="secondary" id="copyLink" type="button">Copy Device Link</button>
         </div>
-        <div class="btns" style="margin-top:10px;">
+
+        <div class="row" style="margin-top:10px;">
+          <button class="secondary" id="getControl" type="button">Get Control</button>
           <button class="secondary" id="getScore" type="button">Get Score</button>
         </div>
       </div>
@@ -850,6 +852,24 @@ function renderControlUiHtml(url) {
         el.textContent = "Scoreboard · " + sportLabel + (teamDisp ? (" · " + teamDisp) : "") + " · device " + device + src;
       }
 
+      function computeSendLabel() {
+        const currentMode = String(state.currentMode || "").trim().toLowerCase();
+        if (!currentMode) return "Send";
+        const currentIsClock = currentMode === "idle";
+        const desiredIsClock = state.display === "clock";
+        if (currentIsClock !== desiredIsClock) {
+          return desiredIsClock ? "Set To Clock & Send" : "Set To Scoreboard & Send";
+        }
+        return "Send";
+      }
+
+      function refreshSendButtonLabel() {
+        const btn = $("send");
+        if (!btn) return;
+        if (btn.classList.contains("loading")) return;
+        $("sendText").textContent = computeSendLabel();
+      }
+
       function applyControlToUi(control) {
         if (!control || typeof control !== "object") return;
 
@@ -866,6 +886,7 @@ function renderControlUiHtml(url) {
         state.source = source;
         state.tz = tz;
         state.display = mode === "idle" ? "clock" : "scoreboard";
+        state.currentMode = mode;
 
         cookieSet("ui_device", device_id);
         cookieSet("ui_sport", sport);
@@ -890,6 +911,7 @@ function renderControlUiHtml(url) {
         cookieSet(teamCookieKey(sport), teamDisplay);
 
         setCurrentSummary(control);
+        refreshSendButtonLabel();
       }
 
       // On load, read back the saved control so the UI reflects what's actually stored.
@@ -905,14 +927,17 @@ function renderControlUiHtml(url) {
 
         // Fallback: reflect local form state.
         try {
-          setCurrentSummary({
+          const control = {
             device_id: $("device").value.trim() || "matrix-01",
             sport: $("sport").value,
             source: $("source").value,
             team: parseTeamAbbr($("team").value),
             mode: state.display === "clock" ? "idle" : "auto",
             tz: $("tz").value || "ct",
-          });
+          };
+          state.currentMode = String(control.mode || "").trim().toLowerCase();
+          setCurrentSummary(control);
+          refreshSendButtonLabel();
         } catch {}
       })();
 
@@ -920,7 +945,7 @@ function renderControlUiHtml(url) {
         const btn = $("send");
         btn.classList.remove("ok", "err", "loading");
         if (kind) btn.classList.add(kind);
-        $("sendText").textContent = label || "Send";
+        $("sendText").textContent = label || computeSendLabel();
       }
 
       $("send").addEventListener("click", async () => {
@@ -944,29 +969,15 @@ function renderControlUiHtml(url) {
               if (readback?.status === 200 && readback?.json) applyControlToUi(readback.json);
             }
             setSendState("ok", "Sent");
-            setTimeout(() => setSendState("", "Send"), 900);
+            setTimeout(() => setSendState("", null), 900);
           } else {
             setSendState("err", "Error");
-            setTimeout(() => setSendState("", "Send"), 1400);
+            setTimeout(() => setSendState("", null), 1400);
           }
         } catch (e) {
           show({ error: String(e && e.message ? e.message : e) });
           setSendState("err", "Error");
-          setTimeout(() => setSendState("", "Send"), 1400);
-        }
-      });
-
-      $("setClock").addEventListener("click", async () => {
-        try {
-          const payload = buildControlPayload({ forceClock: true });
-          show({ sending: payload });
-          const resp = await postControl(payload);
-          show(resp);
-          if (resp && resp.status >= 200 && resp.status < 300 && resp?.json?.control) {
-            applyControlToUi(resp.json.control);
-          }
-        } catch (e) {
-          show({ error: String(e && e.message ? e.message : e) });
+          setTimeout(() => setSendState("", null), 1400);
         }
       });
 
@@ -982,6 +993,29 @@ function renderControlUiHtml(url) {
       $("getScore").addEventListener("click", async () => {
         const device = $("device").value.trim();
         show(await getJson("/score?device_id=" + encodeURIComponent(device)));
+      });
+
+      $("getHealth").addEventListener("click", async () => {
+        show(await getJson("/health"));
+      });
+
+      $("copyLink").addEventListener("click", async () => {
+        const device = $("device").value.trim() || "matrix-01";
+        const link = window.location.origin + "/ui?device_id=" + encodeURIComponent(device);
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(link);
+            show({ copied: link });
+            return;
+          }
+        } catch {}
+
+        try {
+          window.prompt("Copy this link:", link);
+          show({ link });
+        } catch {
+          show({ link });
+        }
       });
 
       $("tabBasic").addEventListener("click", () => {
@@ -1001,6 +1035,7 @@ function renderControlUiHtml(url) {
       $("displaySwitch").addEventListener("click", () => {
         state.display = state.display === "clock" ? "scoreboard" : "clock";
         applyDisplayMode();
+        refreshSendButtonLabel();
       });
 
       $("sport").addEventListener("change", () => {
