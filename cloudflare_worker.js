@@ -48,7 +48,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.22-ui7";
+const WORKER_VERSION = "2026.02.22-ui9";
 
 export default {
   async fetch(request, env) {
@@ -369,6 +369,7 @@ function renderControlUiHtml(url) {
             <option value="nhl">NHL</option>
             <option value="softball">NCAA Softball</option>
             <option value="cbb">NCAA Basketball</option>
+            <option value="dev">DEV</option>
           </select>
 
           <label for="team">Team</label>
@@ -503,6 +504,20 @@ function renderControlUiHtml(url) {
       };
 
       const teamLists = {
+        dev: [
+          ["Alpha", "ALP"],
+          ["Bravo", "BRV"],
+          ["Charlie", "CHR"],
+          ["Delta", "DLT"],
+          ["Echo", "ECH"],
+          ["Foxtrot", "FOX"],
+          ["Gamma", "GAM"],
+          ["Hotel", "HOT"],
+          ["Indigo", "IND"],
+          ["Juliet", "JUL"],
+          ["Kilo", "KIL"],
+          ["Lima", "LIM"],
+        ],
         nfl: [
           ["Arizona Cardinals", "ARI"], ["Atlanta Falcons", "ATL"], ["Baltimore Ravens", "BAL"], ["Buffalo Bills", "BUF"],
           ["Carolina Panthers", "CAR"], ["Chicago Bears", "CHI"], ["Cincinnati Bengals", "CIN"], ["Cleveland Browns", "CLE"],
@@ -636,6 +651,7 @@ function renderControlUiHtml(url) {
         nhl: "pro",
         softball: "ncaa-softball",
         cbb: "ncaa-basketball",
+        dev: "pro",
       };
 
       function teamCookieKey(sport) {
@@ -645,12 +661,14 @@ function renderControlUiHtml(url) {
       function formatTeamDisplay(name, abbr) {
         const n = String(name || "").trim();
         const a = String(abbr || "").trim();
+        if (a.toUpperCase() === "DEV") return "DEV";
         if (!a) return n;
         if (n && a && n.toLowerCase() === a.toLowerCase()) return n;
         return n + " (" + a + ")";
       }
 
       function defaultTeamForSport(sport) {
+        if (sport === "dev") return "Alpha (ALP)";
         if (sport === "softball") return "Wellesley College (WEL)";
         if (sport === "nfl") return "Dallas Cowboys (DAL)";
         if (sport === "nba") return "Dallas Mavericks (DAL)";
@@ -687,7 +705,9 @@ function renderControlUiHtml(url) {
       }
 
       function teamOptionsForSport(sport) {
-        return teamLists[sport] || [];
+        const base = teamLists[sport] || [];
+        // DEV option: fake always-on scoreboard data.
+        return [["DEV", "DEV"], ...base];
       }
 
       function renderTeamDropdown(filterText) {
@@ -846,6 +866,7 @@ function renderControlUiHtml(url) {
           : (sport === "nhl") ? "NHL"
           : (sport === "softball") ? "NCAA Softball"
           : (sport === "cbb") ? "NCAA Basketball"
+          : (sport === "dev") ? "DEV"
           : String(sport || "").toUpperCase();
 
         const src = source ? (" · src " + source) : "";
@@ -1156,6 +1177,13 @@ async function handleGetScore(searchParams, env) {
   const control = await getControl(env, deviceId);
   let payload;
 
+  // DEV mode: UI can set team=DEV to get fake, always-on scoreboard data
+  // without hitting any upstream sports APIs.
+  if (String(control?.sport || "").toLowerCase() === "dev" || String(control?.team || "").toUpperCase() === "DEV") {
+    payload = makeDevScorePayload(control);
+    return jsonResponse(finalizeDisplayPayload(payload));
+  }
+
   if (isWorldCupControl(control)) {
     payload = await fetchSoccerScore(control, env, "world-cup");
   } else if (control.source === "pro") {
@@ -1177,6 +1205,70 @@ async function handleGetScore(searchParams, env) {
   }
 
   return jsonResponse(finalizeDisplayPayload(payload));
+}
+
+function makeDevScorePayload(control) {
+  const step = Math.floor(Date.now() / 5000);
+  const seedBase = (String(control?.device_id || "") + "|" + String(control?.sport || "") + "|" + String(control?.team || "") + "|" + String(step)).toUpperCase();
+
+  // Simple deterministic hash -> PRNG (stable for 5s windows).
+  let h = 2166136261;
+  for (let i = 0; i < seedBase.length; i++) {
+    h ^= seedBase.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  let x = h >>> 0;
+  const rand32 = () => {
+    // xorshift32
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    return x >>> 0;
+  };
+  const randInt = (lo, hi) => {
+    if (hi <= lo) return lo;
+    return lo + (rand32() % (hi - lo + 1));
+  };
+  const randColor = () => {
+    const v = rand32() & 0xffffff;
+    return "#" + v.toString(16).padStart(6, "0");
+  };
+
+  const pickAbbr = (v) => {
+    const s = String(v || "").toUpperCase();
+    const cleaned = s.replace(/[^A-Z0-9]/g, "");
+    if (cleaned.length >= 3) return cleaned.slice(0, 3);
+    if (cleaned.length === 2) return cleaned + "X";
+    if (cleaned.length === 1) return cleaned + "XX";
+    return "DEV";
+  };
+
+  const home_abbr = pickAbbr(control?.team || "DEV");
+  let away_abbr = pickAbbr("AWY");
+  // Ensure different abbreviations.
+  if (away_abbr === home_abbr) away_abbr = pickAbbr("OPP");
+  const home_score = randInt(0, 300);
+  const away_score = randInt(0, 300);
+
+  return {
+    status: "LIVE",
+    view_unavailable: false,
+    display_text: "DEV",
+    message: "DEV",
+    at: "home",
+    team_abbr: home_abbr,
+    opponent_abbr: away_abbr,
+    team: home_abbr,
+    opponent: away_abbr,
+    team_name: "Home",
+    opponent_name: "Away",
+    team_score: home_score,
+    opp_score: away_score,
+    team_primary: randColor(),
+    team_secondary: "#FFFFFF",
+    opp_primary: randColor(),
+    opp_secondary: "#FFFFFF",
+  };
 }
 
 async function handleHealth(env) {
@@ -1308,6 +1400,7 @@ function normalizeControl(input, deviceId) {
     : DEFAULT_CONTROL.source;
   const normalizedSport = (input.sport || "").toString().trim().toLowerCase();
   const sport = [
+    "dev",
     "nfl",
     "nba",
     "mlb",
