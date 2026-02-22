@@ -477,7 +477,7 @@ function renderControlUiHtml(url) {
       };
 
       const state = {
-        advanced: cookieGet("ui_adv") === "1",
+        advanced: false,
         dark: cookieGet("ui_dark") === "1",
         display: cookieGet("ui_disp") || "scoreboard", // scoreboard|clock
         sport: cookieGet("ui_sport") || "nfl",
