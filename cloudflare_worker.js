@@ -231,7 +231,7 @@ function renderControlUiHtml(url) {
       .switch { width: 46px; height: 28px; border-radius: 999px; border: 1px solid var(--border); background: rgba(127,127,127,0.12); position: relative; }
       .switch > span { width: 24px; height: 24px; border-radius: 999px; background: var(--text); position: absolute; top: 1px; left: 1px; transition: transform 120ms ease; }
       .switch.on > span { transform: translateX(18px); }
-      .advHidden { display: none; }
+      .advHidden { display: none !important; }
       .combo { position: relative; display: flex; gap: 8px; align-items: center; }
       .combo input { flex: 1; }
       .comboBtn {
@@ -811,6 +811,9 @@ function renderControlUiHtml(url) {
       // Modal
       function openInfo() { $("infoModal").classList.remove("advHidden"); }
       function closeInfo() { $("infoModal").classList.add("advHidden"); }
+
+      // Safety: never show modal on initial load.
+      closeInfo();
       $("infoBtn").addEventListener("click", openInfo);
       $("closeInfo").addEventListener("click", closeInfo);
       $("infoModal").addEventListener("click", (e) => {
