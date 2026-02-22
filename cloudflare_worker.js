@@ -126,7 +126,9 @@ function renderControlUiHtml(url) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Matrix Scoreboard Control</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2048%2048'%3E%3Crect%20x='4'%20y='4'%20width='10'%20height='10'/%3E%3Crect%20x='19'%20y='4'%20width='10'%20height='10'/%3E%3Crect%20x='34'%20y='4'%20width='10'%20height='10'/%3E%3Crect%20x='4'%20y='19'%20width='10'%20height='10'/%3E%3Crect%20x='19'%20y='19'%20width='10'%20height='10'/%3E%3Crect%20x='34'%20y='19'%20width='10'%20height='10'/%3E%3Crect%20x='4'%20y='34'%20width='10'%20height='10'/%3E%3Crect%20x='19'%20y='34'%20width='10'%20height='10'/%3E%3Crect%20x='34'%20y='34'%20width='10'%20height='10'/%3E%3C/svg%3E" />
     <style>
+      * { box-sizing: border-box; }
       :root {
         --bg: #ffffff;
         --card: #ffffff;
@@ -184,6 +186,7 @@ function renderControlUiHtml(url) {
         outline: none;
       }
       .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
       .btns { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 12px; }
       button.primary {
         font-size: 16px;
@@ -263,13 +266,69 @@ function renderControlUiHtml(url) {
       }
       .comboItem:last-child { border-bottom: 0; }
       .comboItem:hover { background: rgba(127,127,127,0.10); }
+      .titleWrap { display: inline-flex; align-items: center; gap: 10px; }
+      .infoBtn {
+        width: 32px;
+        height: 32px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--muted);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .modalBack {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.40);
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding: 16px;
+        z-index: 50;
+      }
+      .modal {
+        width: 100%;
+        max-width: 520px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+        max-height: 78vh;
+        overflow: auto;
+      }
+      .modalTop { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .modalTop h2 { font-size: 16px; margin: 0; }
+      .closeBtn {
+        width: 38px;
+        height: 38px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text);
+        font-weight: 800;
+      }
+      .modal p { margin: 10px 0; }
+      .modal ul { margin: 8px 0 12px 18px; padding: 0; }
+      .modal li { margin: 6px 0; }
       @media (max-width: 420px) { body { padding: 12px; } }
     </style>
   </head>
   <body data-theme="light">
     <div class="wrap">
       <div class="topbar">
-        <h1>Matrix Scoreboard Control</h1>
+        <div class="titleWrap">
+          <h1>Matrix Scoreboard Control</h1>
+          <button id="infoBtn" class="infoBtn" type="button" aria-label="Info">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M12 17V11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M12 8h.01" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+              <path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" stroke="currentColor" stroke-width="2"/>
+            </svg>
+          </button>
+        </div>
         <div class="seg" role="tablist" aria-label="UI Mode">
           <button id="tabBasic" class="active" type="button">Basic</button>
           <button id="tabAdv" type="button">Advanced</button>
@@ -290,27 +349,28 @@ function renderControlUiHtml(url) {
           </div>
         </div>
 
-        <label for="sport">Sport</label>
-        <select id="sport">
-          <option value="nfl" selected>NFL</option>
-          <option value="nba">NBA</option>
-          <option value="mlb">MLB</option>
-          <option value="nhl">NHL</option>
-          <option value="softball">Softball</option>
-          <option value="soccer">Soccer</option>
-          <option value="golf">Golf</option>
-          <option value="tennis-singles">Tennis (Singles)</option>
-        </select>
+        <div id="scoreControls">
+          <label for="sport">Sport</label>
+          <select id="sport">
+            <option value="nfl" selected>NFL</option>
+            <option value="nba">NBA</option>
+            <option value="mlb">MLB</option>
+            <option value="nhl">NHL</option>
+            <option value="softball">NCAA Softball</option>
+            <option value="cbb">NCAA Basketball</option>
+            <option value="soccer">Soccer</option>
+          </select>
 
-        <label for="team">Team</label>
-        <div class="combo">
-          <input id="team" value="Dallas Cowboys (DAL)" autocapitalize="words" />
-          <button id="teamBtn" class="comboBtn" type="button" aria-label="Teams">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </button>
-          <div id="teamList" class="comboList advHidden" role="listbox" aria-label="Teams"></div>
+          <label for="team">Team</label>
+          <div class="combo">
+            <input id="team" value="Dallas Cowboys (DAL)" autocapitalize="words" />
+            <button id="teamBtn" class="comboBtn" type="button" aria-label="Teams">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div id="teamList" class="comboList advHidden" role="listbox" aria-label="Teams"></div>
+          </div>
         </div>
 
         <div id="tzWrap" class="advHidden">
@@ -373,6 +433,38 @@ function renderControlUiHtml(url) {
       <div class="muted">Preferences are saved on this device.</div>
     </div>
 
+    <div id="infoModal" class="modalBack advHidden" role="dialog" aria-modal="true" aria-label="Info">
+      <div class="modal">
+        <div class="modalTop">
+          <h2>How this works</h2>
+          <button id="closeInfo" class="closeBtn" type="button" aria-label="Close">×</button>
+        </div>
+
+        <p><strong>Basic</strong></p>
+        <ul>
+          <li><strong>Scoreboard / Clock</strong> chooses what the MatrixPortal shows.</li>
+          <li><strong>Sport</strong> automatically selects the correct score source.</li>
+          <li><strong>Team</strong> pick from the list or type to search, then tap <strong>Send</strong>.</li>
+          <li>When <strong>Clock</strong> is selected, you can pick a <strong>Timezone</strong>.</li>
+        </ul>
+
+        <p><strong>Advanced</strong></p>
+        <ul>
+          <li><strong>Device ID</strong> selects which MatrixPortal device to control (default: matrix-01).</li>
+          <li><strong>Bearer Token</strong> is optional (this UI is configured for public control).</li>
+          <li><strong>Source</strong> lets you override where scores come from.</li>
+          <li><strong>Get Control / Get Score</strong> shows the raw JSON from the Worker.</li>
+        </ul>
+
+        <p><strong>Nitty gritty</strong></p>
+        <ul>
+          <li>This page sends a <code>POST /control</code> with: <code>{ device_id, source, sport, team, mode, tz }</code>.</li>
+          <li>Your MatrixPortal polls <code>/control</code> and <code>/score</code> every few seconds and updates the display.</li>
+          <li><code>mode: "idle"</code> forces clock-only mode on the board.</li>
+        </ul>
+      </div>
+    </div>
+
     <script>
       const $ = (id) => document.getElementById(id);
       const out = $("out");
@@ -389,7 +481,7 @@ function renderControlUiHtml(url) {
         dark: cookieGet("ui_dark") === "1",
         display: cookieGet("ui_disp") || "scoreboard", // scoreboard|clock
         sport: cookieGet("ui_sport") || "nfl",
-        team: cookieGet("ui_team") || "Dallas Cowboys (DAL)",
+        team: "",
         sourceOverride: cookieGet("ui_src_override") === "1",
         source: cookieGet("ui_source") || "pro",
         device: cookieGet("ui_device") || "${deviceId}",
@@ -439,9 +531,8 @@ function renderControlUiHtml(url) {
           ["Vancouver Canucks", "VAN"], ["Vegas Golden Knights", "VGK"], ["Washington Capitals", "WSH"], ["Winnipeg Jets", "WPG"],
         ],
         softball: [["Wellesley", "WEL"]],
+        cbb: [],
         soccer: [],
-        golf: [],
-        "tennis-singles": [],
       };
 
       const sportToSource = {
@@ -449,11 +540,21 @@ function renderControlUiHtml(url) {
         nba: "pro",
         mlb: "pro",
         nhl: "pro",
-        softball: "wellesley",
+        softball: "ncaa-softball",
+        cbb: "ncaa-basketball",
         soccer: "pro",
-        golf: "pro",
-        "tennis-singles": "pro",
       };
+
+      function teamCookieKey(sport) {
+        return "ui_team_" + String(sport || "").toLowerCase();
+      }
+
+      function defaultTeamForSport(sport) {
+        if (sport === "softball") return "Wellesley (WEL)";
+        const arr = teamOptionsForSport(sport);
+        if (arr && arr.length) return arr[0][0] + " (" + arr[0][1] + ")";
+        return "";
+      }
 
       function setSwitch(el, on) {
         el.classList.toggle("on", !!on);
@@ -477,6 +578,7 @@ function renderControlUiHtml(url) {
         setSwitch($("displaySwitch"), state.display === "clock");
         cookieSet("ui_disp", state.display);
         $("tzWrap").classList.toggle("advHidden", state.display !== "clock");
+        $("scoreControls").classList.toggle("advHidden", state.display === "clock");
       }
 
       function teamOptionsForSport(sport) {
@@ -507,7 +609,7 @@ function renderControlUiHtml(url) {
           div.addEventListener("click", () => {
             $("team").value = div.textContent;
             state.team = div.textContent;
-            cookieSet("ui_team", state.team);
+            cookieSet(teamCookieKey(state.sport), state.team);
             closeTeamDropdown();
           });
           list.appendChild(div);
@@ -515,7 +617,7 @@ function renderControlUiHtml(url) {
       }
 
       function openTeamDropdown() {
-        renderTeamDropdown($("team").value);
+        renderTeamDropdown("");
         $("teamList").classList.remove("advHidden");
       }
 
@@ -530,24 +632,22 @@ function renderControlUiHtml(url) {
       }
 
       function inferSource() {
-        if (state.sourceOverride) return;
         state.source = sportToSource[state.sport] || "pro";
         $("source").value = state.source;
         cookieSet("ui_source", state.source);
       }
+
+      // Remove stale keys from older UI versions
+      try { document.cookie = "ui_team=; path=/; max-age=0"; } catch {}
+
+      state.team = cookieGet(teamCookieKey(state.sport)) || defaultTeamForSport(state.sport) || "Dallas Cowboys (DAL)";
 
       $("token").value = state.token;
       $("device").value = state.device;
       $("sport").value = state.sport;
       $("team").value = state.team;
       $("source").value = state.source;
-      $("tz").value = state.tz;
-
-      if (state.sport === "softball") {
-        state.team = "Wellesley (WEL)";
-        $("team").value = state.team;
-        cookieSet("ui_team", state.team);
-      }
+      $("tz").value = state.tz || "ct";
 
       inferSource();
       applyTheme();
@@ -573,7 +673,7 @@ function renderControlUiHtml(url) {
         cookieSet("ui_token", token);
         cookieSet("ui_device", $("device").value.trim());
         cookieSet("ui_sport", $("sport").value.trim());
-        cookieSet("ui_team", $("team").value);
+        cookieSet(teamCookieKey($("sport").value.trim()), $("team").value);
         cookieSet("ui_source", $("source").value.trim());
         cookieSet("ui_tz", $("tz").value);
         const res = await fetch("/control", {
@@ -664,20 +764,23 @@ function renderControlUiHtml(url) {
       $("sport").addEventListener("change", () => {
         state.sport = $("sport").value;
         cookieSet("ui_sport", state.sport);
+        // Sport change always forces default source mapping.
+        state.sourceOverride = false;
+        cookieSet("ui_src_override", "0");
         inferSource();
 
-        if (state.sport === "softball") {
-          state.team = "Wellesley (WEL)";
+        const remembered = cookieGet(teamCookieKey(state.sport));
+        state.team = state.sport === "softball" ? "Wellesley (WEL)" : (remembered || defaultTeamForSport(state.sport));
+        if (state.team) {
           $("team").value = state.team;
-          cookieSet("ui_team", state.team);
+          cookieSet(teamCookieKey(state.sport), state.team);
         }
-
         closeTeamDropdown();
       });
 
       $("team").addEventListener("change", () => {
         state.team = $("team").value;
-        cookieSet("ui_team", state.team);
+        cookieSet(teamCookieKey(state.sport), state.team);
       });
 
       $("team").addEventListener("focus", () => {
@@ -703,6 +806,15 @@ function renderControlUiHtml(url) {
       $("tz").addEventListener("change", () => {
         state.tz = $("tz").value;
         cookieSet("ui_tz", state.tz);
+      });
+
+      // Modal
+      function openInfo() { $("infoModal").classList.remove("advHidden"); }
+      function closeInfo() { $("infoModal").classList.add("advHidden"); }
+      $("infoBtn").addEventListener("click", openInfo);
+      $("closeInfo").addEventListener("click", closeInfo);
+      $("infoModal").addEventListener("click", (e) => {
+        if (e.target && e.target.id === "infoModal") closeInfo();
       });
 
       $("source").addEventListener("change", () => {
