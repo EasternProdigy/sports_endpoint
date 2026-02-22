@@ -76,6 +76,48 @@ def _hex_color_to_int(v, fallback):
         return fallback
 
 
+def _nth_sunday(year, month, n):
+    # tm_wday: Mon=0 ... Sun=6
+    wday_m1 = time.localtime(time.mktime((year, month, 1, 0, 0, 0, 0, 0, -1))).tm_wday
+    first_sunday = 1 if wday_m1 == 6 else 1 + ((6 - wday_m1) % 7)
+    return first_sunday + 7 * (n - 1)
+
+
+def _us_is_dst(utc_epoch, std_offset_hours):
+    # US DST rules: 2nd Sunday in March, 1st Sunday in Nov
+    y = time.localtime(utc_epoch).tm_year
+    start_day = _nth_sunday(y, 3, 2)
+    end_day = _nth_sunday(y, 11, 1)
+
+    # DST starts 02:00 local STANDARD time
+    dst_start_utc = time.mktime((y, 3, start_day, 2 - std_offset_hours, 0, 0, 0, 0, -1))
+    # DST ends 02:00 local DAYLIGHT time
+    dst_end_utc = time.mktime((y, 11, end_day, 2 - (std_offset_hours + 1), 0, 0, 0, 0, -1))
+    return dst_start_utc <= utc_epoch < dst_end_utc
+
+
+def tz_offset_seconds(utc_epoch, tz):
+    t = (tz or "").strip().lower()
+    if t == "utc":
+        return 0
+
+    std = None
+    if t == "et":
+        std = -5
+    elif t == "ct":
+        std = -6
+    elif t == "mt":
+        std = -7
+    elif t == "pt":
+        std = -8
+
+    if std is None:
+        std = -6
+
+    is_dst = _us_is_dst(utc_epoch, std)
+    return int((std + (1 if is_dst else 0)) * 3600)
+
+
 # -----------------------
 # CONFIG (settings.toml)
 # -----------------------
@@ -89,6 +131,10 @@ CONTROL_API_TOKEN = (_env_str("CONTROL_API_TOKEN", "")).strip()
 CONTROL_POLL_SECONDS = _env_int("CONTROL_POLL_SECONDS", 3)
 REMOTE_SCORE_POLL_ACTIVE_SECONDS = _env_int("REMOTE_SCORE_POLL_ACTIVE_SECONDS", 3)
 REMOTE_SCORE_POLL_IDLE_SECONDS = _env_int("REMOTE_SCORE_POLL_IDLE_SECONDS", 20)
+
+# Clock timezone (can be overridden by remote control field `tz`)
+# Values: utc|et|ct|mt|pt
+CLOCK_TZ = (_env_str("CLOCK_TZ", "ct")).strip().lower()
 
 NTP_ENABLED = _env_bool("NTP_ENABLED", True)
 NTP_RESYNC_SECONDS = _env_int("NTP_RESYNC_SECONDS", 6 * 3600)
@@ -488,11 +534,15 @@ while True:
             print("NTP failed:", repr(e))
             mid_lbl.text = "NTP FAIL"
 
-    # local time (simple): use RTC epoch if valid, else fake it from uptime
+    # local time: use RTC epoch if valid, else fake it from uptime
     utc_epoch = int(time.time())
     if utc_epoch < 1700000000:
         utc_epoch = 1735689600 + int(mono)  # 2025-01-01 + uptime seconds
-    now_local = time.localtime(utc_epoch)
+
+    tz = CLOCK_TZ
+    if isinstance(control, dict):
+        tz = str(control.get("tz") or tz).strip().lower() or tz
+    now_local = time.localtime(utc_epoch + tz_offset_seconds(utc_epoch, tz))
 
     if DISPLAY_MODE == "clock":
         show_clock(now_local)

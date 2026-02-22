@@ -3,6 +3,7 @@ const DEFAULT_CONTROL = {
   sport: "nfl",
   team: "DAL",
   mode: "auto",
+  tz: "ct", // utc|et|ct|mt|pt
 };
 
 const NCAA_SOURCE_KEYS = ["ncaa-softball", "ncaa_softball", "ncaa"];
@@ -47,7 +48,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.22-ui2";
+const WORKER_VERSION = "2026.02.22-ui3";
 
 export default {
   async fetch(request, env) {
@@ -196,7 +197,12 @@ function renderControlUiHtml(url) {
         align-items: center;
         justify-content: center;
         gap: 10px;
+        transition: transform 120ms ease, filter 160ms ease, background 160ms ease;
       }
+      button.primary:active { transform: scale(0.99); }
+      button.primary.ok { background: #16a34a; color: #ffffff; }
+      button.primary.err { background: #dc2626; color: #ffffff; }
+      button.primary.loading { filter: brightness(0.92); }
       button.secondary {
         font-size: 16px;
         padding: 12px;
@@ -223,6 +229,40 @@ function renderControlUiHtml(url) {
       .switch > span { width: 24px; height: 24px; border-radius: 999px; background: var(--text); position: absolute; top: 1px; left: 1px; transition: transform 120ms ease; }
       .switch.on > span { transform: translateX(18px); }
       .advHidden { display: none; }
+      .combo { position: relative; display: flex; gap: 8px; align-items: center; }
+      .combo input { flex: 1; }
+      .comboBtn {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        border: 1px solid var(--fieldBorder);
+        background: var(--field);
+        color: var(--fieldText);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .comboList {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 54px;
+        z-index: 10;
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 12px;
+        overflow: hidden;
+        max-height: 280px;
+        overflow-y: auto;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.20);
+      }
+      .comboItem {
+        padding: 12px;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+      }
+      .comboItem:last-child { border-bottom: 0; }
+      .comboItem:hover { background: rgba(127,127,127,0.10); }
       @media (max-width: 420px) { body { padding: 12px; } }
     </style>
   </head>
@@ -263,8 +303,26 @@ function renderControlUiHtml(url) {
         </select>
 
         <label for="team">Team</label>
-        <input id="team" list="teams" value="Dallas Cowboys (DAL)" autocapitalize="words" />
-        <datalist id="teams"></datalist>
+        <div class="combo">
+          <input id="team" value="Dallas Cowboys (DAL)" autocapitalize="words" />
+          <button id="teamBtn" class="comboBtn" type="button" aria-label="Teams">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <div id="teamList" class="comboList advHidden" role="listbox" aria-label="Teams"></div>
+        </div>
+
+        <div id="tzWrap" class="advHidden">
+          <label for="tz">Timezone (Clock)</label>
+          <select id="tz">
+            <option value="ct" selected>Central (CT)</option>
+            <option value="et">Eastern (ET)</option>
+            <option value="mt">Mountain (MT)</option>
+            <option value="pt">Pacific (PT)</option>
+            <option value="utc">UTC</option>
+          </select>
+        </div>
 
         <div class="btns">
           <button id="send" class="primary" type="button" aria-label="Send">
@@ -272,7 +330,7 @@ function renderControlUiHtml(url) {
               <path d="M22 2L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
               <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            Send
+            <span id="sendText">Send</span>
           </button>
         </div>
 
@@ -336,6 +394,7 @@ function renderControlUiHtml(url) {
         source: cookieGet("ui_source") || "pro",
         device: cookieGet("ui_device") || "${deviceId}",
         token: cookieGet("ui_token") || "",
+        tz: cookieGet("ui_tz") || "ct",
       };
 
       const teamLists = {
@@ -417,17 +476,51 @@ function renderControlUiHtml(url) {
       function applyDisplayMode() {
         setSwitch($("displaySwitch"), state.display === "clock");
         cookieSet("ui_disp", state.display);
+        $("tzWrap").classList.toggle("advHidden", state.display !== "clock");
       }
 
-      function setTeamsForSport(sport) {
-        const dl = $("teams");
-        dl.innerHTML = "";
-        const arr = teamLists[sport] || [];
-        for (const [name, abbr] of arr) {
-          const opt = document.createElement("option");
-          opt.value = name + " (" + abbr + ")";
-          dl.appendChild(opt);
+      function teamOptionsForSport(sport) {
+        return teamLists[sport] || [];
+      }
+
+      function renderTeamDropdown(filterText) {
+        const list = $("teamList");
+        const q = String(filterText || "").trim().toLowerCase();
+        const arr = teamOptionsForSport(state.sport);
+        const filtered = q
+          ? arr.filter(([name, abbr]) => (name + " " + abbr).toLowerCase().includes(q))
+          : arr;
+
+        list.innerHTML = "";
+        if (filtered.length === 0) {
+          const div = document.createElement("div");
+          div.className = "comboItem";
+          div.textContent = "No matches";
+          list.appendChild(div);
+          return;
         }
+
+        for (const [name, abbr] of filtered.slice(0, 60)) {
+          const div = document.createElement("div");
+          div.className = "comboItem";
+          div.textContent = name + " (" + abbr + ")";
+          div.addEventListener("click", () => {
+            $("team").value = div.textContent;
+            state.team = div.textContent;
+            cookieSet("ui_team", state.team);
+            closeTeamDropdown();
+          });
+          list.appendChild(div);
+        }
+      }
+
+      function openTeamDropdown() {
+        renderTeamDropdown($("team").value);
+        $("teamList").classList.remove("advHidden");
+      }
+
+      function closeTeamDropdown() {
+        $("teamList").classList.add("advHidden");
       }
 
       function parseTeamAbbr(input) {
@@ -448,8 +541,14 @@ function renderControlUiHtml(url) {
       $("sport").value = state.sport;
       $("team").value = state.team;
       $("source").value = state.source;
+      $("tz").value = state.tz;
 
-      setTeamsForSport(state.sport);
+      if (state.sport === "softball") {
+        state.team = "Wellesley (WEL)";
+        $("team").value = state.team;
+        cookieSet("ui_team", state.team);
+      }
+
       inferSource();
       applyTheme();
       applyTabs();
@@ -462,9 +561,11 @@ function renderControlUiHtml(url) {
         const team = parseTeamAbbr(teamInput);
         const source = $("source").value.trim() || (sportToSource[sport] || "pro");
 
+        const tz = $("tz").value || "ct";
+
         const clock = (opts && opts.forceClock) || state.display === "clock";
         const mode = clock ? "idle" : "auto";
-        return { device_id, source, sport, team, mode };
+        return { device_id, source, sport, team, mode, tz };
       }
 
       async function postControl(payload) {
@@ -474,6 +575,7 @@ function renderControlUiHtml(url) {
         cookieSet("ui_sport", $("sport").value.trim());
         cookieSet("ui_team", $("team").value);
         cookieSet("ui_source", $("source").value.trim());
+        cookieSet("ui_tz", $("tz").value);
         const res = await fetch("/control", {
           method: "POST",
           headers: {
@@ -494,12 +596,30 @@ function renderControlUiHtml(url) {
 
       function show(obj) { out.textContent = JSON.stringify(obj, null, 2); }
 
+      function setSendState(kind, label) {
+        const btn = $("send");
+        btn.classList.remove("ok", "err", "loading");
+        if (kind) btn.classList.add(kind);
+        $("sendText").textContent = label || "Send";
+      }
+
       $("send").addEventListener("click", async () => {
         try {
+          setSendState("loading", "Sending…");
           show({ sending: buildControlPayload({ forceClock: false }) });
-          show(await postControl(buildControlPayload({ forceClock: false })));
+          const resp = await postControl(buildControlPayload({ forceClock: false }));
+          show(resp);
+          if (resp && resp.status >= 200 && resp.status < 300) {
+            setSendState("ok", "Sent");
+            setTimeout(() => setSendState("", "Send"), 900);
+          } else {
+            setSendState("err", "Error");
+            setTimeout(() => setSendState("", "Send"), 1400);
+          }
         } catch (e) {
           show({ error: String(e && e.message ? e.message : e) });
+          setSendState("err", "Error");
+          setTimeout(() => setSendState("", "Send"), 1400);
         }
       });
 
@@ -544,13 +664,45 @@ function renderControlUiHtml(url) {
       $("sport").addEventListener("change", () => {
         state.sport = $("sport").value;
         cookieSet("ui_sport", state.sport);
-        setTeamsForSport(state.sport);
         inferSource();
+
+        if (state.sport === "softball") {
+          state.team = "Wellesley (WEL)";
+          $("team").value = state.team;
+          cookieSet("ui_team", state.team);
+        }
+
+        closeTeamDropdown();
       });
 
       $("team").addEventListener("change", () => {
         state.team = $("team").value;
         cookieSet("ui_team", state.team);
+      });
+
+      $("team").addEventListener("focus", () => {
+        openTeamDropdown();
+      });
+
+      $("team").addEventListener("input", () => {
+        state.team = $("team").value;
+        renderTeamDropdown(state.team);
+      });
+
+      $("teamBtn").addEventListener("click", () => {
+        const open = !$("teamList").classList.contains("advHidden");
+        if (open) closeTeamDropdown();
+        else openTeamDropdown();
+      });
+
+      document.addEventListener("click", (e) => {
+        const combo = e.target && (e.target.closest ? e.target.closest(".combo") : null);
+        if (!combo) closeTeamDropdown();
+      });
+
+      $("tz").addEventListener("change", () => {
+        state.tz = $("tz").value;
+        cookieSet("ui_tz", state.tz);
       });
 
       $("source").addEventListener("change", () => {
@@ -781,12 +933,16 @@ function normalizeControl(input, deviceId) {
     ? input.mode
     : DEFAULT_CONTROL.mode;
 
+  const normalizedTz = (input.tz || "").toString().trim().toLowerCase();
+  const tz = ["utc", "et", "ct", "mt", "pt"].includes(normalizedTz) ? normalizedTz : DEFAULT_CONTROL.tz;
+
   return {
     device_id: deviceId,
     source,
     sport,
     team,
     mode,
+    tz,
     updated_at: Math.floor(Date.now() / 1000),
   };
 }
