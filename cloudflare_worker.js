@@ -4,6 +4,7 @@ const DEFAULT_CONTROL = {
   team: "DAL",
   mode: "auto",
   tz: "ct", // utc|et|ct|mt|pt
+  brightness: 0.22,
 };
 
 const NCAA_SOURCE_KEYS = ["ncaa-softball", "ncaa_softball", "ncaa"];
@@ -48,7 +49,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.22-ui9";
+const WORKER_VERSION = "2026.02.22-ui10";
 
 export default {
   async fetch(request, env) {
@@ -339,6 +340,12 @@ function renderControlUiHtml(url) {
               <path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" stroke="currentColor" stroke-width="2"/>
             </svg>
           </button>
+          <button id="settingsBtn" class="infoBtn" type="button" aria-label="Settings">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="currentColor" stroke-width="2"/>
+              <path d="M19.4 15a7.7 7.7 0 0 0 .1-1 7.7 7.7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 2h-6l-.3 2.9a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.7 7.7 0 0 0-.1 1 7.7 7.7 0 0 0 .1 1l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 1.7 1L9 22h6l.3-2.9a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
         <div class="seg" role="tablist" aria-label="UI Mode">
           <button id="tabBasic" class="active" type="button">Basic</button>
@@ -444,7 +451,6 @@ function renderControlUiHtml(url) {
         <pre id="out">(none)</pre>
       </div>
 
-      <div class="muted">Preferences are saved on this device.</div>
     </div>
 
     <div id="infoModal" class="modalBack advHidden" role="dialog" aria-modal="true" aria-label="Info">
@@ -472,10 +478,30 @@ function renderControlUiHtml(url) {
 
         <p><strong>Nitty gritty</strong></p>
         <ul>
-          <li>This page sends a <code>POST /control</code> with: <code>{ device_id, source, sport, team, mode, tz }</code>.</li>
+          <li>This page sends a <code>POST /control</code> with: <code>{ device_id, source, sport, team, mode, tz, brightness }</code>.</li>
           <li>Your MatrixPortal polls <code>/control</code> and <code>/score</code> every few seconds and updates the display.</li>
           <li><code>mode: "idle"</code> forces clock-only mode on the board.</li>
         </ul>
+      </div>
+    </div>
+
+    <div id="settingsModal" class="modalBack advHidden" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="modal">
+        <div class="modalTop">
+          <h2>Settings</h2>
+          <button id="closeSettings" class="closeBtn" type="button" aria-label="Close">×</button>
+        </div>
+
+        <label for="brightness">Brightness</label>
+        <div class="row">
+          <input id="brightness" type="range" min="0.05" max="1" step="0.01" value="0.22" />
+          <input id="brightnessNum" type="number" min="0.05" max="1" step="0.01" value="0.22" />
+        </div>
+        <div class="muted" style="margin-top:8px;">Saves to the device control state so the MatrixPortal remembers it.</div>
+
+        <div class="btns" style="margin-top:12px;">
+          <button id="applySettings" class="primary" type="button">Apply</button>
+        </div>
       </div>
     </div>
 
@@ -501,6 +527,7 @@ function renderControlUiHtml(url) {
         device: cookieGet("ui_device") || "${deviceId}",
         token: cookieGet("ui_token") || "",
         tz: cookieGet("ui_tz") || "ct",
+        brightness: parseFloat(cookieGet("ui_brightness") || "") || 0.22,
       };
 
       const teamLists = {
@@ -774,6 +801,8 @@ function renderControlUiHtml(url) {
       $("team").value = state.team;
       $("source").value = state.source;
       $("tz").value = state.tz || "ct";
+      $("brightness").value = String(state.brightness);
+      $("brightnessNum").value = String(state.brightness);
 
       inferSource();
       applyTheme();
@@ -789,9 +818,12 @@ function renderControlUiHtml(url) {
 
         const tz = $("tz").value || "ct";
 
+        const brightnessRaw = parseFloat(String(state.brightness || "").trim());
+        const brightness = Number.isFinite(brightnessRaw) ? Math.min(1, Math.max(0.05, brightnessRaw)) : 0.22;
+
         const clock = (opts && opts.forceClock) || state.display === "clock";
         const mode = clock ? "idle" : "auto";
-        return { device_id, source, sport, team, mode, tz };
+        return { device_id, source, sport, team, mode, tz, brightness };
       }
 
       async function postControl(payload) {
@@ -802,6 +834,7 @@ function renderControlUiHtml(url) {
         cookieSet(teamCookieKey($("sport").value.trim()), $("team").value);
         cookieSet("ui_source", $("source").value.trim());
         cookieSet("ui_tz", $("tz").value);
+        cookieSet("ui_brightness", String(state.brightness));
         const res = await fetch("/control", {
           method: "POST",
           headers: {
@@ -900,6 +933,7 @@ function renderControlUiHtml(url) {
         const team = String(control.team || "").trim();
         const mode = String(control.mode || "auto").trim().toLowerCase();
         const tz = String(control.tz || "ct").trim().toLowerCase() || "ct";
+        const brightness = Number(control.brightness);
 
         // Update state + cookies first
         state.device = device_id;
@@ -913,6 +947,14 @@ function renderControlUiHtml(url) {
         cookieSet("ui_sport", sport);
         cookieSet("ui_source", source);
         cookieSet("ui_tz", tz);
+
+        if (Number.isFinite(brightness)) {
+          const b = Math.min(1, Math.max(0.05, brightness));
+          state.brightness = b;
+          cookieSet("ui_brightness", String(b));
+          if ($("brightness")) $("brightness").value = String(b);
+          if ($("brightnessNum")) $("brightnessNum").value = String(b);
+        }
 
         // If server source doesn't match the sport default mapping, mark it as overridden.
         const inferred = sportToSource[sport] || "pro";
@@ -1110,12 +1152,63 @@ function renderControlUiHtml(url) {
       function openInfo() { $("infoModal").classList.remove("advHidden"); }
       function closeInfo() { $("infoModal").classList.add("advHidden"); }
 
+      function openSettings() {
+        if ($("brightness")) $("brightness").value = String(state.brightness);
+        if ($("brightnessNum")) $("brightnessNum").value = String(state.brightness);
+        $("settingsModal").classList.remove("advHidden");
+      }
+      function closeSettings() { $("settingsModal").classList.add("advHidden"); }
+
       // Safety: never show modal on initial load.
       closeInfo();
+      closeSettings();
       $("infoBtn").addEventListener("click", openInfo);
+      $("settingsBtn").addEventListener("click", openSettings);
       $("closeInfo").addEventListener("click", closeInfo);
+      $("closeSettings").addEventListener("click", closeSettings);
       $("infoModal").addEventListener("click", (e) => {
         if (e.target && e.target.id === "infoModal") closeInfo();
+      });
+
+      $("settingsModal").addEventListener("click", (e) => {
+        if (e.target && e.target.id === "settingsModal") closeSettings();
+      });
+
+      function setBrightness(v) {
+        const n = parseFloat(String(v || "").trim());
+        if (!Number.isFinite(n)) return;
+        const b = Math.min(1, Math.max(0.05, n));
+        state.brightness = b;
+        cookieSet("ui_brightness", String(b));
+        $("brightness").value = String(b);
+        $("brightnessNum").value = String(b);
+      }
+
+      $("brightness").addEventListener("input", () => setBrightness($("brightness").value));
+      $("brightnessNum").addEventListener("change", () => setBrightness($("brightnessNum").value));
+
+      $("applySettings").addEventListener("click", async () => {
+        try {
+          setSendState("loading", "Sending…");
+          const payload = buildControlPayload({ forceClock: false });
+          show({ sending: payload });
+          const resp = await postControl(payload);
+          show(resp);
+          if (resp && resp.status >= 200 && resp.status < 300) {
+            const control = resp?.json?.control;
+            if (control) applyControlToUi(control);
+            setSendState("ok", "Sent");
+            setTimeout(() => setSendState("", null), 900);
+            closeSettings();
+          } else {
+            setSendState("err", "Error");
+            setTimeout(() => setSendState("", null), 1400);
+          }
+        } catch (e) {
+          show({ error: String(e && e.message ? e.message : e) });
+          setSendState("err", "Error");
+          setTimeout(() => setSendState("", null), 1400);
+        }
       });
 
       $("source").addEventListener("change", () => {
@@ -1421,6 +1514,11 @@ function normalizeControl(input, deviceId) {
   const normalizedTz = (input.tz || "").toString().trim().toLowerCase();
   const tz = ["utc", "et", "ct", "mt", "pt"].includes(normalizedTz) ? normalizedTz : DEFAULT_CONTROL.tz;
 
+  const rawBrightness = Number(input.brightness);
+  const brightness = Number.isFinite(rawBrightness)
+    ? Math.min(1, Math.max(0.05, rawBrightness))
+    : (Number(DEFAULT_CONTROL.brightness) || 0.22);
+
   return {
     device_id: deviceId,
     source,
@@ -1428,6 +1526,7 @@ function normalizeControl(input, deviceId) {
     team,
     mode,
     tz,
+    brightness,
     updated_at: Math.floor(Date.now() / 1000),
   };
 }

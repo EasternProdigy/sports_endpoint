@@ -47,7 +47,20 @@ def _env_int(name, default):
         return default
 
 
+def _env_float(name, default):
+    v = _env(name, None)
+    if v is None:
+        return default
+    try:
+        return float(str(v).strip())
+    except Exception:
+        return default
+
+
 DISPLAY_MODE = _env("DISPLAY_MODE", "auto").strip().lower()  # auto|clock|scores
+
+# Default brightness (can be overridden by /control brightness).
+DISPLAY_BRIGHTNESS = _env_float("DISPLAY_BRIGHTNESS", 0.22)
 
 REMOTE_CONTROL_ENABLED = _env_bool("REMOTE_CONTROL_ENABLED", True)
 CONTROL_BASE_URL = _env("CONTROL_BASE_URL", "").strip().rstrip("/")
@@ -165,7 +178,15 @@ WELLESLEY_BLUE = 0x0033AA
 
 matrixportal = MatrixPortal(status_neopixel=board.NEOPIXEL, use_wifi=False, debug=False)
 display = matrixportal.display
-display.brightness = 0.22
+try:
+    b0 = float(DISPLAY_BRIGHTNESS)
+    if b0 < 0.05:
+        b0 = 0.05
+    if b0 > 1:
+        b0 = 1
+    display.brightness = b0
+except Exception:
+    display.brightness = 0.22
 W = display.width
 H = display.height
 
@@ -616,7 +637,7 @@ def load_cache():
     if not raw:
         return None
 
-    # Format: mode|tz|team_score|opp_score|team_abbr|opp_abbr|at|tp|ts|op|os
+    # Format: mode|tz|team_score|opp_score|team_abbr|opp_abbr|at|tp|ts|op|os|brightness
     parts = raw.split("|")
     if len(parts) < 11:
         return None
@@ -627,7 +648,13 @@ def load_cache():
         except Exception:
             return None
 
-    return {
+    def nfloat(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    out = {
         "mode": parts[0],
         "tz": parts[1],
         "team_score": nint(parts[2]),
@@ -641,9 +668,12 @@ def load_cache():
         "opp_secondary": parts[10] or None,
         "view_unavailable": True,
     }
+    if len(parts) >= 12:
+        out["brightness"] = nfloat(parts[11])
+    return out
 
 
-def save_cache(mode, tz, score):
+def save_cache(mode, tz, score, brightness=None):
     try:
         team_score = "" if not score else ("" if score.get("team_score") is None else str(score.get("team_score")))
         opp_score = "" if not score else ("" if score.get("opp_score") is None else str(score.get("opp_score")))
@@ -654,6 +684,7 @@ def save_cache(mode, tz, score):
         ts = "" if not score else (score.get("team_secondary") or "")
         op = "" if not score else (score.get("opp_primary") or "")
         os2 = "" if not score else (score.get("opp_secondary") or "")
+        b = "" if brightness is None else str(brightness)
         line = "|".join([
             str(mode or ""),
             str(tz or ""),
@@ -666,6 +697,7 @@ def save_cache(mode, tz, score):
             str(ts),
             str(op),
             str(os2),
+            b,
         ])
         with open(CACHE_FILE, "w") as f:
             f.write(line)
@@ -777,6 +809,19 @@ last_score_ok = False
 # Instant: draw something on first frame.
 cached = load_cache()
 
+try:
+    cb = None
+    if cached and cached.get("brightness") is not None:
+        cb = float(cached.get("brightness"))
+    if cb is not None:
+        if cb < 0.05:
+            cb = 0.05
+        if cb > 1:
+            cb = 1
+        display.brightness = cb
+except Exception:
+    pass
+
 while True:
     mono = time.monotonic()
 
@@ -791,6 +836,28 @@ while True:
         tz = str(cached.get("tz") or tz).strip().lower() or tz
 
     now_local = time.localtime(utc_epoch + tz_offset_seconds(utc_epoch, tz))
+
+    # Brightness (from /control, else cached, else env default)
+    try:
+        desired_brightness = float(DISPLAY_BRIGHTNESS)
+    except Exception:
+        desired_brightness = 0.22
+    try:
+        if isinstance(control, dict) and (control.get("brightness") is not None):
+            desired_brightness = float(control.get("brightness"))
+        elif cached and cached.get("brightness") is not None:
+            desired_brightness = float(cached.get("brightness"))
+    except Exception:
+        pass
+    if desired_brightness < 0.05:
+        desired_brightness = 0.05
+    if desired_brightness > 1:
+        desired_brightness = 1
+    try:
+        if abs(float(display.brightness) - desired_brightness) > 0.005:
+            display.brightness = desired_brightness
+    except Exception:
+        pass
 
     # Decide what to display (always something):
     try:
@@ -841,7 +908,12 @@ while True:
             if isinstance(c, dict):
                 control = c
                 # Keep cache updated with latest control mode/tz.
-                save_cache(str(control.get("mode") or ""), str(control.get("tz") or ""), score)
+                save_cache(
+                    str(control.get("mode") or ""),
+                    str(control.get("tz") or ""),
+                    score,
+                    control.get("brightness"),
+                )
             last_control = mono
 
         desired_mode = "auto"
@@ -866,7 +938,12 @@ while True:
                     "opp_secondary": s.get("opp_secondary"),
                     "view_unavailable": bool(s.get("view_unavailable")),
                 }
-                save_cache(str((control or {}).get("mode") or ""), str((control or {}).get("tz") or ""), score)
+                save_cache(
+                    str((control or {}).get("mode") or ""),
+                    str((control or {}).get("tz") or ""),
+                    score,
+                    (control or {}).get("brightness"),
+                )
                 last_score_ok = True
             else:
                 last_score_ok = False
