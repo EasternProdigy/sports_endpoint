@@ -54,7 +54,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.23-ui14";
+const WORKER_VERSION = "2026.02.23-ui15";
 
 // Wellesley softball schedule (used for Wellesley-only softball timers).
 const WELLESLEYBLUE_SOFTBALL_SCHEDULE_URL = "https://wellesleyblue.com/sports/softball/schedule/2025";
@@ -1918,30 +1918,58 @@ async function fetchWellesleyBlueSoftballNextGameCountdown(control, env) {
     }
     const html = await resp.text();
 
+    const nowMs = Date.now();
+
+    // Prefer parsing the site's own countdown so we match what users see on WellesleyBlue
+    // and avoid timezone conversion edge-cases.
+    // Example: "Next Game Mar 16 / 10:00 AM 20 days 14 hours 38 Mins 10 Secs"
+    const cd = html.match(/Next\s+Game\b[\s\S]{0,300}?(\d{1,3})\s+days\s+(\d{1,2})\s+hours\s+(\d{1,2})\s+Mins\s+(\d{1,2})\s+Secs/i);
+    let countdownSeconds = null;
+    if (cd) {
+      const d = Number(cd[1]);
+      const h = Number(cd[2]);
+      const m2 = Number(cd[3]);
+      const s2 = Number(cd[4]);
+      if ([d, h, m2, s2].every((n) => Number.isFinite(n) && n >= 0)) {
+        countdownSeconds = Math.max(0, Math.trunc(d * 86400 + h * 3600 + m2 * 60 + s2));
+      }
+    }
+
     // Example snippet includes:
     // "Live video for Softball at Salem State University on March 16, 2026 at 10:00 AM"
     // or "... Softball vs Springfield College on April 9, 2025 at 5:00 PM"
+    let where = "vs";
+    let opponentName = "OPP";
+    let startMs = null;
+
+    // Try to parse opponent + exact date/time (best for start timestamp).
     const re = /Softball\s+(at|vs\.?|vs)\s+([^\n\r<]+?)\s+on\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})\s+at\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i;
     const m = html.match(re);
-    if (!m) {
-      return makeNcaaSoftballMock("WELLESLEY", "SCHEDULED");
+    if (m) {
+      where = String(m[1] || "").trim().toLowerCase();
+      opponentName = String(m[2] || "OPP").trim().replace(/\s+/g, " ");
+      const mon = parseMonthAbbrevToNumber(m[3]);
+      const day = Number(m[4]);
+      const year = Number(m[5]);
+      const hh = Number(m[6]);
+      const mm = Number(m[7]);
+      const ap = String(m[8] || "").trim().toUpperCase();
+      if (mon && Number.isFinite(day) && Number.isFinite(year) && Number.isFinite(hh) && Number.isFinite(mm)) {
+        const hour24 = (ap === "PM" ? (hh % 12) + 12 : (hh % 12));
+        // WellesleyBlue times are Eastern.
+        startMs = zonedLocalToUtcMs({ year, month: mon, day, hour24, minute: mm, timeZone: "America/New_York" });
+      }
     }
 
-    const where = String(m[1] || "").trim().toLowerCase();
-    const opponentName = String(m[2] || "OPP").trim().replace(/\s+/g, " ");
-    const mon = parseMonthAbbrevToNumber(m[3]);
-    const day = Number(m[4]);
-    const year = Number(m[5]);
-    const hh = Number(m[6]);
-    const mm = Number(m[7]);
-    const ap = String(m[8] || "").trim().toUpperCase();
-    if (!mon || !Number.isFinite(day) || !Number.isFinite(year) || !Number.isFinite(hh) || !Number.isFinite(mm)) {
+    // If we couldn't compute an exact start time, derive one from the countdown.
+    if (startMs === null && countdownSeconds !== null) {
+      startMs = nowMs + (countdownSeconds * 1000);
+    }
+
+    // Last resort: without either countdown or start time, return a mock.
+    if (startMs === null && countdownSeconds === null) {
       return makeNcaaSoftballMock("WELLESLEY", "SCHEDULED");
     }
-    const hour24 = (ap === "PM" ? (hh % 12) + 12 : (hh % 12));
-
-    // WellesleyBlue times are Eastern.
-    const startMs = zonedLocalToUtcMs({ year, month: mon, day, hour24, minute: mm, timeZone: "America/New_York" });
 
     const payload = {
       source: "ncaa-softball",
@@ -1952,11 +1980,24 @@ async function fetchWellesleyBlueSoftballNextGameCountdown(control, env) {
       opp_score: null,
       status: "SCHEDULED",
       at: where.startsWith("at") ? "Away" : "Home",
-      game_time: new Date(startMs).toISOString(),
+      game_time: startMs ? new Date(startMs).toISOString() : null,
     };
 
-    const withTimer = withCountdownFromMs(payload, startMs, true);
-    const out = withTeamMeta(withTimer, null);
+    let out;
+    if (countdownSeconds !== null) {
+      out = {
+        ...payload,
+        now_unix: Math.floor(nowMs / 1000),
+        next_game_time_unix: startMs ? Math.floor(startMs / 1000) : undefined,
+        countdown_seconds: countdownSeconds,
+        countdown_text: formatCountdown(countdownSeconds),
+        countdown_active: true,
+      };
+    } else {
+      out = withCountdownFromMs(payload, startMs, true);
+    }
+
+    out = withTeamMeta(out, null);
     out.opponent_name = opponentName;
     return out;
   } catch {
