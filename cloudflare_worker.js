@@ -54,7 +54,10 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.23-ui13";
+const WORKER_VERSION = "2026.02.23-ui14";
+
+// Wellesley softball schedule (used for Wellesley-only softball timers).
+const WELLESLEYBLUE_SOFTBALL_SCHEDULE_URL = "https://wellesleyblue.com/sports/softball/schedule/2025";
 
 // Public NCAA API (henrygd/ncaa-api). This mirrors ncaa.com paths.
 // Docs: https://ncaa-api.henrygd.me/openapi
@@ -938,7 +941,7 @@ function renderControlUiHtml(url) {
 
       function applyTimerAvailability() {
         const src = effectiveSource();
-        const allowed = src === "pro" || src === "ncaa-softball" || src === "ncaa-basketball";
+        const allowed = src === "pro" || src === "ncaa-softball";
         const sw = $("timerSwitch");
         sw.classList.toggle("disabled", !allowed);
         sw.setAttribute("aria-disabled", allowed ? "false" : "true");
@@ -960,10 +963,22 @@ function renderControlUiHtml(url) {
         const sport = String(state.sport || "").trim().toLowerCase();
         const src = effectiveSource();
 
+        // Softball timers are Wellesley-only (from WellesleyBlue schedule).
+        if (src === "ncaa-softball") {
+          sel.innerHTML = "";
+          const opt = document.createElement("option");
+          opt.value = "WELLESLEY";
+          opt.textContent = "Wellesley College (WELLESLEY)";
+          sel.appendChild(opt);
+          sel.value = "WELLESLEY";
+          try { cookieSet("ui_timer_team_" + sport, "WELLESLEY"); } catch {}
+          return;
+        }
+
         // For NCAA sources, use the live /teams data so we send the correct NCAA slug
         // (e.g. WELLESLEY, ST-MARYS-CA) instead of legacy abbreviations.
         let arr;
-        if ((src === "ncaa-softball" || src === "ncaa-basketball") && Array.isArray(state.lastTeams) && state.lastTeams.length) {
+        if ((src === "ncaa-basketball") && Array.isArray(state.lastTeams) && state.lastTeams.length) {
           arr = state.lastTeams
             .map((t) => [String(t?.name || t?.abbr || "").trim(), String(t?.abbr || "").trim().toUpperCase()])
             .filter(([name, abbr]) => !!abbr && !!name);
@@ -1751,20 +1766,15 @@ async function handleGetScore(searchParams, env) {
   }
 
   // Timer view: countdown to next game (days:hours:minutes on device).
-  // Implemented for ESPN Pro sports and NCAA (when start times are available).
+  // Implemented for ESPN Pro sports and Wellesley softball (via WellesleyBlue schedule).
   if (String(control?.view || "").toLowerCase() === "timer") {
     if (String(control?.source || "").toLowerCase() === "pro") {
       payload = await fetchProNextGameCountdown(control, env, { debug });
       return jsonResponse(finalizeDisplayPayload(payload));
     }
 
-    if (isNcaaBasketballControl(control)) {
-      payload = await fetchNcaaBasketballNextGameCountdown(control, env);
-      return jsonResponse(finalizeDisplayPayload(payload));
-    }
-
     if (isNcaaSoftballControl(control)) {
-      payload = await fetchNcaaSoftballNextGameCountdown(control, env);
+      payload = await fetchWellesleyBlueSoftballNextGameCountdown(control, env);
       return jsonResponse(finalizeDisplayPayload(payload));
     }
 
@@ -1799,28 +1809,17 @@ async function handleGetScore(searchParams, env) {
       : await fetchOlympicsScore(control, env);
   } else if (isNcaaBasketballControl(control)) {
     payload = await fetchNcaaBasketballScore(control, env);
-
-    // Score view fallback: if the team isn't currently playing (or bracket has no live game),
-    // show a countdown to the next scheduled game when possible.
-    if (String(control?.view || "score").toLowerCase() === "score") {
-      const hasScore = payload && payload.team_score !== null && payload.team_score !== undefined && payload.opp_score !== null && payload.opp_score !== undefined;
-      const hasCountdown = payload && payload.countdown_active === true;
-      const unavailable = payload && (payload.view_unavailable === true || String(payload.status || "").toUpperCase() === "NONE");
-      if ((!hasScore && !hasCountdown) || unavailable) {
-        const countdown = await fetchNcaaBasketballNextGameCountdown(control, env);
-        if (countdown && countdown.countdown_active === true) payload = countdown;
-      }
-    }
   } else if (isNcaaSoftballControl(control)) {
     payload = await fetchNcaaSoftballScore(control, env);
 
-    // Score view fallback: when not playing, show next-game countdown.
-    if (String(control?.view || "score").toLowerCase() === "score") {
+    // Score view fallback (Wellesley only): when not playing, show next-game countdown
+    // from WellesleyBlue so the timer matches the athletics site.
+    if (String(control?.view || "score").toLowerCase() === "score" && isWellesleySoftballTeam(control?.team)) {
       const hasScore = payload && payload.team_score !== null && payload.team_score !== undefined && payload.opp_score !== null && payload.opp_score !== undefined;
       const hasCountdown = payload && payload.countdown_active === true;
       const unavailable = payload && (payload.view_unavailable === true || String(payload.status || "").toUpperCase() === "NONE");
       if ((!hasScore && !hasCountdown) || unavailable) {
-        const countdown = await fetchNcaaSoftballNextGameCountdown(control, env);
+        const countdown = await fetchWellesleyBlueSoftballNextGameCountdown(control, env);
         if (countdown && countdown.countdown_active === true) payload = countdown;
       }
     }
@@ -1829,6 +1828,140 @@ async function handleGetScore(searchParams, env) {
   }
 
   return jsonResponse(finalizeDisplayPayload(payload));
+}
+
+function isWellesleySoftballTeam(teamCode) {
+  const t = String(teamCode || "").trim().toUpperCase();
+  return t === "WEL" || t === "WELLESLEY" || t.startsWith("WELLESLEY-") || t.startsWith("WELLESLEYCOLLEGE");
+}
+
+function parseMonthAbbrevToNumber(mon) {
+  const m = String(mon || "").trim().slice(0, 3).toUpperCase();
+  const map = {
+    JAN: 1,
+    FEB: 2,
+    MAR: 3,
+    APR: 4,
+    MAY: 5,
+    JUN: 6,
+    JUL: 7,
+    AUG: 8,
+    SEP: 9,
+    OCT: 10,
+    NOV: 11,
+    DEC: 12,
+  };
+  return map[m] || null;
+}
+
+function zonedLocalToUtcMs({ year, month, day, hour24, minute, timeZone }) {
+  // Convert a local time in an IANA timezone to UTC ms using Intl.
+  // This avoids hard-coding DST offsets.
+  let utc = Date.UTC(year, month - 1, day, hour24, minute, 0);
+  const wantKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")} ${String(hour24).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: String(timeZone || "UTC"),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  for (let i = 0; i < 3; i++) {
+    const parts = fmt.formatToParts(new Date(utc));
+    const y = Number(parts.find((p) => p.type === "year")?.value);
+    const mo = Number(parts.find((p) => p.type === "month")?.value);
+    const da = Number(parts.find((p) => p.type === "day")?.value);
+    const hh = Number(parts.find((p) => p.type === "hour")?.value);
+    const mm = Number(parts.find((p) => p.type === "minute")?.value);
+    const gotKey = `${y}-${String(mo).padStart(2, "0")}-${String(da).padStart(2, "0")} ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+    if (gotKey === wantKey) break;
+    const wantUtc = Date.UTC(year, month - 1, day, hour24, minute, 0);
+    const gotUtc = Date.UTC(y, mo - 1, da, hh, mm, 0);
+    const delta = wantUtc - gotUtc;
+    if (!Number.isFinite(delta) || delta === 0) break;
+    utc += delta;
+  }
+
+  return utc;
+}
+
+async function fetchWellesleyBlueSoftballNextGameCountdown(control, env) {
+  const requested = String(control?.team || "").trim().toUpperCase();
+  if (!isWellesleySoftballTeam(requested)) {
+    // Only support Wellesley timers as requested.
+    return withTeamMeta({
+      source: "ncaa-softball",
+      sport: "softball",
+      team: requested || "WELLESLEY",
+      opponent: "OPP",
+      team_score: null,
+      opp_score: null,
+      status: "NONE",
+      at: "Home",
+      view_unavailable: true,
+      message: "WELLESLEY TIMER ONLY",
+      display_text: "WELLESLEY TIMER ONLY",
+    });
+  }
+
+  try {
+    const resp = await fetch(WELLESLEYBLUE_SOFTBALL_SCHEDULE_URL, {
+      headers: { Accept: "text/html" },
+      cf: { cacheTtl: 60, cacheEverything: false },
+    });
+    if (!resp.ok) {
+      return makeNcaaSoftballMock("WELLESLEY", "SCHEDULED");
+    }
+    const html = await resp.text();
+
+    // Example snippet includes:
+    // "Live video for Softball at Salem State University on March 16, 2026 at 10:00 AM"
+    // or "... Softball vs Springfield College on April 9, 2025 at 5:00 PM"
+    const re = /Softball\s+(at|vs\.?|vs)\s+([^\n\r<]+?)\s+on\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})\s+at\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i;
+    const m = html.match(re);
+    if (!m) {
+      return makeNcaaSoftballMock("WELLESLEY", "SCHEDULED");
+    }
+
+    const where = String(m[1] || "").trim().toLowerCase();
+    const opponentName = String(m[2] || "OPP").trim().replace(/\s+/g, " ");
+    const mon = parseMonthAbbrevToNumber(m[3]);
+    const day = Number(m[4]);
+    const year = Number(m[5]);
+    const hh = Number(m[6]);
+    const mm = Number(m[7]);
+    const ap = String(m[8] || "").trim().toUpperCase();
+    if (!mon || !Number.isFinite(day) || !Number.isFinite(year) || !Number.isFinite(hh) || !Number.isFinite(mm)) {
+      return makeNcaaSoftballMock("WELLESLEY", "SCHEDULED");
+    }
+    const hour24 = (ap === "PM" ? (hh % 12) + 12 : (hh % 12));
+
+    // WellesleyBlue times are Eastern.
+    const startMs = zonedLocalToUtcMs({ year, month: mon, day, hour24, minute: mm, timeZone: "America/New_York" });
+
+    const payload = {
+      source: "ncaa-softball",
+      sport: "softball",
+      team: "WELLESLEY",
+      opponent: opponentName,
+      team_score: null,
+      opp_score: null,
+      status: "SCHEDULED",
+      at: where.startsWith("at") ? "Away" : "Home",
+      game_time: new Date(startMs).toISOString(),
+    };
+
+    const withTimer = withCountdownFromMs(payload, startMs, true);
+    const out = withTeamMeta(withTimer, null);
+    out.opponent_name = opponentName;
+    return out;
+  } catch {
+    return makeNcaaSoftballMock("WELLESLEY", "SCHEDULED");
+  }
 }
 
 async function handleGetTeams(searchParams, env) {
