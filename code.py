@@ -1,5 +1,5 @@
 # code.py — MatrixPortal M4 remote scoreboard + clock (instant display + robust)
-# version: 2026.02.22.13
+# version: 2026.02.22.15
 
 import os
 import time
@@ -477,6 +477,48 @@ def _show_colons_for_clock():
         r.hidden = True
 
 
+def _show_colons_for_timer():
+    # Two colons for DD:HH:MM using digits [0..5] => [DD][HH][MM].
+    seg1 = digits[1][0]
+    seg2 = digits[2][0]
+    seg3 = digits[3][0]
+    seg4 = digits[4][0]
+    x1 = seg1.x - SEG_T
+    y = seg1.y
+    x2 = seg2.x - SEG_T
+    gap12_center = (x1 + SEG_W + x2) // 2
+    top_y = y + 5
+    bot_y = y + 11
+    colon_x1 = gap12_center - (COLON_W // 2)
+    if colon_x1 < 0:
+        colon_x1 = 0
+    if colon_x1 > (W - COLON_W):
+        colon_x1 = W - COLON_W
+
+    x3 = seg3.x - SEG_T
+    x4 = seg4.x - SEG_T
+    gap34_center = (x3 + SEG_W + x4) // 2
+    colon_x2 = gap34_center - (COLON_W // 2)
+    if colon_x2 < 0:
+        colon_x2 = 0
+    if colon_x2 > (W - COLON_W):
+        colon_x2 = W - COLON_W
+
+    colon1[0].x = colon_x1
+    colon1[0].y = top_y
+    colon1[1].x = colon_x1
+    colon1[1].y = bot_y
+    for r in colon1:
+        r.hidden = False
+
+    colon2[0].x = colon_x2
+    colon2[0].y = top_y
+    colon2[1].x = colon_x2
+    colon2[1].y = bot_y
+    for r in colon2:
+        r.hidden = False
+
+
 _place_digits_clock()
 
 
@@ -527,6 +569,69 @@ def show_clock(now_local):
         ampm_x = max(2, (digits[4][0].x - SEG_T) + 1)
         ampm_lbl.x = ampm_x
         ampm_lbl.y = digits[4][0].y + 6
+
+
+def _place_digits_timer():
+    # DD:HH:MM
+    gap_dh = 3
+    gap_hm = 3
+    total_w = (6 * SEG_W) + (5 * SEG_DIGIT_GAP) + gap_dh + gap_hm
+    start_x = (W - total_w) // 2
+    safe_y = max(0, (H - SEG_H) // 2)
+    x = start_x
+    for i in range(6):
+        _set_digit_xy(digits[i], x, safe_y)
+        x += SEG_W
+        if i != 5:
+            x += SEG_DIGIT_GAP
+        if i == 1:
+            x += gap_dh
+        elif i == 3:
+            x += gap_hm
+
+
+def show_timer(entry):
+    if not isinstance(entry, dict):
+        return False
+    if not entry.get("countdown_active"):
+        return False
+    secs = entry.get("countdown_seconds")
+    try:
+        secs = int(secs)
+    except Exception:
+        return False
+    if secs < 0:
+        secs = 0
+
+    days = secs // 86400
+    hours = (secs % 86400) // 3600
+    mins = (secs % 3600) // 60
+    if days > 99:
+        days = 99
+
+    _hide_message()
+    _hide_ampm()
+    divider1.hidden = True
+    divider2.hidden = True
+    left_bg.fill = 0x101010
+    right_bg.fill = 0x101010
+    _set_top_labels("", "")
+    _show_all_digits()
+    _place_digits_timer()
+    _show_colons_for_timer()
+    for segs in digits:
+        _set_digit_color(segs, WHITE)
+
+    d_t, d_o = _two(days)
+    h_t, h_o = _two(hours)
+    m_t, m_o = _two(mins)
+    _set_digit_char(digits[0], d_t)
+    _set_digit_char(digits[1], d_o)
+    _set_digit_char(digits[2], h_t)
+    _set_digit_char(digits[3], h_o)
+    _set_digit_char(digits[4], m_t)
+    _set_digit_char(digits[5], m_o)
+    return True
 
 
 def show_score(entry):
@@ -837,6 +942,16 @@ while True:
 
     now_local = time.localtime(utc_epoch + tz_offset_seconds(utc_epoch, tz))
 
+    # Determine effective mode for network behavior.
+    # In clock mode we only need /control (for tz + mode), never /score.
+    mode_effective = None
+    if DISPLAY_MODE == "clock":
+        mode_effective = "idle"
+    elif isinstance(control, dict):
+        mode_effective = str(control.get("mode") or "").strip().lower()
+    elif cached and cached.get("mode"):
+        mode_effective = str(cached.get("mode") or "").strip().lower()
+
     # Brightness (from /control, else cached, else env default)
     try:
         desired_brightness = float(DISPLAY_BRIGHTNESS)
@@ -876,6 +991,8 @@ while True:
                 # Scoreboard mode: show ONLY scores when available, otherwise show NOT ON.
                 if score and show_score(score):
                     pass
+                elif score and show_timer(score):
+                    pass
                 elif last_score_ok and (not score or score.get("team_score") is None or score.get("opp_score") is None or score.get("view_unavailable")):
                     show_not_playing(_control_team_abbr(control))
                 elif cached and show_score(cached):
@@ -890,7 +1007,10 @@ while True:
     # Network
     init_network()
     connected = (esp is not None) and getattr(esp, "is_connected", False)
-    if _net_inited and (not connected) and (mono - wifi_attempt_last) >= 3:
+
+    # Wi-Fi connect can block; be less aggressive while clock-only.
+    wifi_period = 20 if mode_effective == "idle" else 3
+    if _net_inited and (not connected) and (mono - wifi_attempt_last) >= wifi_period:
         wifi_attempt_last = mono
         connect_wifi()
         connected = (esp is not None) and getattr(esp, "is_connected", False)
@@ -904,7 +1024,8 @@ while True:
 
     if connected and REMOTE_CONTROL_ENABLED and CONTROL_BASE_URL:
         if (mono - last_control) >= CONTROL_POLL_SECONDS:
-            c = get_json("/control?device_id=" + CONTROL_DEVICE_ID)
+            c_timeout = 2 if mode_effective == "idle" else 5
+            c = get_json("/control?device_id=" + CONTROL_DEVICE_ID, timeout=c_timeout)
             if isinstance(c, dict):
                 control = c
                 # Keep cache updated with latest control mode/tz.
@@ -920,33 +1041,38 @@ while True:
         if isinstance(control, dict):
             desired_mode = str(control.get("mode") or "auto").strip().lower()
 
-        poll_s = REMOTE_SCORE_POLL_IDLE_SECONDS if desired_mode == "idle" else REMOTE_SCORE_POLL_ACTIVE_SECONDS
-        if (mono - last_score) >= poll_s:
-            s = get_json("/score?device_id=" + CONTROL_DEVICE_ID)
-            if isinstance(s, dict):
-                score = {
-                    "team_score": s.get("team_score"),
-                    "opp_score": s.get("opp_score"),
-                    "team_abbr": s.get("team_abbr"),
-                    "opponent_abbr": s.get("opponent_abbr"),
-                    "team_name": s.get("team") or s.get("team_name"),
-                    "opp_name": s.get("opponent") or s.get("opponent_name"),
-                    "at": s.get("at"),
-                    "team_primary": s.get("team_primary"),
-                    "team_secondary": s.get("team_secondary"),
-                    "opp_primary": s.get("opp_primary"),
-                    "opp_secondary": s.get("opp_secondary"),
-                    "view_unavailable": bool(s.get("view_unavailable")),
-                }
-                save_cache(
-                    str((control or {}).get("mode") or ""),
-                    str((control or {}).get("tz") or ""),
-                    score,
-                    (control or {}).get("brightness"),
-                )
-                last_score_ok = True
-            else:
-                last_score_ok = False
+        # In clock-only mode, do not poll /score at all.
+        if desired_mode != "idle" and mode_effective != "idle":
+            poll_s = REMOTE_SCORE_POLL_ACTIVE_SECONDS
+            if (mono - last_score) >= poll_s:
+                s = get_json("/score?device_id=" + CONTROL_DEVICE_ID)
+                if isinstance(s, dict):
+                    score = {
+                        "team_score": s.get("team_score"),
+                        "opp_score": s.get("opp_score"),
+                        "team_abbr": s.get("team_abbr"),
+                        "opponent_abbr": s.get("opponent_abbr"),
+                        "team_name": s.get("team") or s.get("team_name"),
+                        "opp_name": s.get("opponent") or s.get("opponent_name"),
+                        "at": s.get("at"),
+                        "team_primary": s.get("team_primary"),
+                        "team_secondary": s.get("team_secondary"),
+                        "opp_primary": s.get("opp_primary"),
+                        "opp_secondary": s.get("opp_secondary"),
+                        "view_unavailable": bool(s.get("view_unavailable")),
+                        "countdown_active": bool(s.get("countdown_active")),
+                        "countdown_seconds": s.get("countdown_seconds"),
+                    }
+                    save_cache(
+                        str((control or {}).get("mode") or ""),
+                        str((control or {}).get("tz") or ""),
+                        score,
+                        (control or {}).get("brightness"),
+                    )
+                    last_score_ok = True
+                else:
+                    last_score_ok = False
+                last_score = mono
             last_score = mono
 
     time.sleep(1)

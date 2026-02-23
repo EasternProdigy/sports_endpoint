@@ -2,6 +2,7 @@ const DEFAULT_CONTROL = {
   source: "wellesley",
   sport: "nfl",
   team: "DAL",
+  view: "score", // score|timer
   mode: "auto",
   tz: "ct", // utc|et|ct|mt|pt
   brightness: 0.22,
@@ -49,7 +50,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.22-ui10";
+const WORKER_VERSION = "2026.02.22-ui11";
 
 export default {
   async fetch(request, env) {
@@ -84,6 +85,10 @@ export default {
 
       if (pathname === "/control" && request.method === "GET") {
         return await handleGetControl(searchParams, env);
+      }
+
+      if (pathname === "/teams" && request.method === "GET") {
+        return await handleGetTeams(searchParams, env);
       }
 
       if (pathname === "/score" && request.method === "GET") {
@@ -346,6 +351,12 @@ function renderControlUiHtml(url) {
               <path d="M19.4 15a7.7 7.7 0 0 0 .1-1 7.7 7.7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 2h-6l-.3 2.9a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.7 7.7 0 0 0-.1 1 7.7 7.7 0 0 0 .1 1l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 1.7 1L9 22h6l.3-2.9a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
             </svg>
           </button>
+          <button id="reloadBtn" class="infoBtn" type="button" aria-label="Reload">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-2.6-6.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M21 3v6h-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
         <div class="seg" role="tablist" aria-label="UI Mode">
           <button id="tabBasic" class="active" type="button">Basic</button>
@@ -379,15 +390,24 @@ function renderControlUiHtml(url) {
             <option value="dev">DEV</option>
           </select>
 
-          <label for="team">Team</label>
-          <div class="combo">
-            <input id="team" value="Dallas Cowboys (DAL)" autocapitalize="words" />
-            <button id="teamBtn" class="comboBtn" type="button" aria-label="Teams">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </button>
-            <div id="teamList" class="comboList advHidden" role="listbox" aria-label="Teams"></div>
+          <div id="liveTeamWrap">
+            <label for="teamLive">Team (Live)</label>
+            <select id="teamLive"></select>
+            <div class="muted" style="margin-top:8px;">Shows teams actively playing right now (from ESPN). Choose <strong>Timer…</strong> for a next-game countdown.</div>
+          </div>
+
+          <div id="timerControls" class="advHidden">
+            <label for="team">Team (Timer)</label>
+            <div class="combo">
+              <input id="team" value="Dallas Cowboys (DAL)" autocapitalize="words" />
+              <button id="teamBtn" class="comboBtn" type="button" aria-label="Teams">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <div id="teamList" class="comboList advHidden" role="listbox" aria-label="Teams"></div>
+            </div>
+            <div class="muted" style="margin-top:8px;">Shows a days:hours:minutes countdown to the next game on the board.</div>
           </div>
         </div>
 
@@ -478,7 +498,7 @@ function renderControlUiHtml(url) {
 
         <p><strong>Nitty gritty</strong></p>
         <ul>
-          <li>This page sends a <code>POST /control</code> with: <code>{ device_id, source, sport, team, mode, tz, brightness }</code>.</li>
+          <li>This page sends a <code>POST /control</code> with: <code>{ device_id, source, sport, team, view, mode, tz, brightness }</code>.</li>
           <li>Your MatrixPortal polls <code>/control</code> and <code>/score</code> every few seconds and updates the display.</li>
           <li><code>mode: "idle"</code> forces clock-only mode on the board.</li>
         </ul>
@@ -521,7 +541,9 @@ function renderControlUiHtml(url) {
         dark: cookieGet("ui_dark") === "1",
         display: cookieGet("ui_disp") || "scoreboard", // scoreboard|clock
         sport: cookieGet("ui_sport") || "nfl",
-        team: "",
+        view: cookieGet("ui_view") || "score", // score|timer
+        team: "", // timer/team-search display string
+        liveTeam: cookieGet("ui_live_team") || "", // team code
         sourceOverride: cookieGet("ui_src_override") === "1",
         source: cookieGet("ui_source") || "pro",
         device: cookieGet("ui_device") || "${deviceId}",
@@ -529,6 +551,8 @@ function renderControlUiHtml(url) {
         tz: cookieGet("ui_tz") || "ct",
         brightness: parseFloat(cookieGet("ui_brightness") || "") || 0.22,
       };
+
+      const TIMER_VALUE = "__TIMER__";
 
       const teamLists = {
         dev: [
@@ -804,16 +828,86 @@ function renderControlUiHtml(url) {
       $("brightness").value = String(state.brightness);
       $("brightnessNum").value = String(state.brightness);
 
+      function setView(view) {
+        const v = String(view || "").trim().toLowerCase();
+        state.view = (v === "timer") ? "timer" : "score";
+        cookieSet("ui_view", state.view);
+        $("timerControls").classList.toggle("advHidden", state.view !== "timer");
+        $("liveTeamWrap").classList.toggle("advHidden", state.view === "timer");
+      }
+
+      async function loadLiveTeams() {
+        try {
+          if (state.source !== "pro" || state.display === "clock") {
+            $("teamLive").innerHTML = '<option value="' + TIMER_VALUE + '">Timer…</option>';
+            return;
+          }
+
+          const sport = $("sport").value.trim() || "nfl";
+          const resp = await getJson("/teams?sport=" + encodeURIComponent(sport) + "&source=pro");
+          const teams = (resp?.status === 200 && resp?.json && Array.isArray(resp.json.teams)) ? resp.json.teams : [];
+
+          const sel = $("teamLive");
+          sel.innerHTML = "";
+
+          if (!teams.length) {
+            const opt = document.createElement("option");
+            opt.value = TIMER_VALUE;
+            opt.textContent = "Timer…";
+            sel.appendChild(opt);
+            sel.value = TIMER_VALUE;
+            setView("timer");
+            return;
+          }
+
+          for (const t of teams) {
+            const abbr = String(t?.abbr || "").trim().toUpperCase();
+            if (!abbr) continue;
+            const name = String(t?.name || abbr).trim() || abbr;
+            const opt = document.createElement("option");
+            opt.value = abbr;
+            opt.textContent = formatTeamDisplay(name, abbr);
+            sel.appendChild(opt);
+          }
+
+          // Timer option at bottom.
+          const timerOpt = document.createElement("option");
+          timerOpt.value = TIMER_VALUE;
+          timerOpt.textContent = "Timer…";
+          sel.appendChild(timerOpt);
+
+          // Restore last selection if possible.
+          const remembered = cookieGet("ui_live_team_" + sport.toLowerCase());
+          if (remembered && Array.from(sel.options).some((o) => o.value === remembered)) {
+            sel.value = remembered;
+            state.liveTeam = remembered;
+          } else {
+            sel.value = sel.options[0]?.value || TIMER_VALUE;
+            state.liveTeam = sel.value;
+          }
+
+          setView(sel.value === TIMER_VALUE ? "timer" : "score");
+        } catch {
+          try { $("teamLive").innerHTML = '<option value="' + TIMER_VALUE + '">Timer…</option>'; } catch {}
+        }
+      }
+
       inferSource();
       applyTheme();
       applyTabs();
       applyDisplayMode();
+      setView(state.view);
 
       function buildControlPayload(opts) {
         const device_id = $("device").value.trim() || "matrix-01";
         const sport = $("sport").value.trim();
-        const teamInput = $("team").value;
-        const team = parseTeamAbbr(teamInput);
+        const view = state.view;
+        let team = "";
+        if (view === "timer") {
+          team = parseTeamAbbr($("team").value);
+        } else {
+          team = String($("teamLive").value || "").trim().toUpperCase();
+        }
         const source = $("source").value.trim() || (sportToSource[sport] || "pro");
 
         const tz = $("tz").value || "ct";
@@ -823,7 +917,7 @@ function renderControlUiHtml(url) {
 
         const clock = (opts && opts.forceClock) || state.display === "clock";
         const mode = clock ? "idle" : "auto";
-        return { device_id, source, sport, team, mode, tz, brightness };
+        return { device_id, source, sport, team, view, mode, tz, brightness };
       }
 
       async function postControl(payload) {
@@ -831,7 +925,13 @@ function renderControlUiHtml(url) {
         cookieSet("ui_token", token);
         cookieSet("ui_device", $("device").value.trim());
         cookieSet("ui_sport", $("sport").value.trim());
-        cookieSet(teamCookieKey($("sport").value.trim()), $("team").value);
+        cookieSet("ui_view", String(state.view || "score"));
+        if (String(state.view) === "timer") {
+          cookieSet(teamCookieKey($("sport").value.trim()), $("team").value);
+        } else {
+          const s = $("sport").value.trim().toLowerCase();
+          cookieSet("ui_live_team_" + s, String($("teamLive").value || ""));
+        }
         cookieSet("ui_source", $("source").value.trim());
         cookieSet("ui_tz", $("tz").value);
         cookieSet("ui_brightness", String(state.brightness));
@@ -885,6 +985,7 @@ function renderControlUiHtml(url) {
         const source = String(control.source || "").trim().toLowerCase();
         const mode = String(control.mode || "auto").trim().toLowerCase();
         const tz = String(control.tz || "ct").trim().toLowerCase() || "ct";
+        const view = String(control.view || "score").trim().toLowerCase();
         const teamRaw = String(control.team || "").trim();
         const teamDisp = teamDisplayFromControl(sport, teamRaw) || teamRaw;
 
@@ -903,7 +1004,8 @@ function renderControlUiHtml(url) {
           : String(sport || "").toUpperCase();
 
         const src = source ? (" · src " + source) : "";
-        el.textContent = "Scoreboard · " + sportLabel + (teamDisp ? (" · " + teamDisp) : "") + " · device " + device + src;
+        const kind = view === "timer" ? "Timer" : "Scoreboard";
+        el.textContent = kind + " · " + sportLabel + (teamDisp ? (" · " + teamDisp) : "") + " · device " + device + src;
       }
 
       function computeSendLabel() {
@@ -931,6 +1033,7 @@ function renderControlUiHtml(url) {
         const sport = String(control.sport || "").trim() || "nfl";
         const source = String(control.source || "").trim() || (sportToSource[sport] || "pro");
         const team = String(control.team || "").trim();
+        const view = String(control.view || "score").trim().toLowerCase();
         const mode = String(control.mode || "auto").trim().toLowerCase();
         const tz = String(control.tz || "ct").trim().toLowerCase() || "ct";
         const brightness = Number(control.brightness);
@@ -938,6 +1041,7 @@ function renderControlUiHtml(url) {
         // Update state + cookies first
         state.device = device_id;
         state.sport = sport;
+        setView(view);
         state.source = source;
         state.tz = tz;
         state.display = mode === "idle" ? "clock" : "scoreboard";
@@ -973,8 +1077,15 @@ function renderControlUiHtml(url) {
         $("team").value = teamDisplay;
         cookieSet(teamCookieKey(sport), teamDisplay);
 
+        // Live team picker prefers storing a team code.
+        try {
+          const sportKey = String(sport || "").trim().toLowerCase();
+          if (team) cookieSet("ui_live_team_" + sportKey, String(team || ""));
+        } catch {}
+
         setCurrentSummary(control);
         refreshSendButtonLabel();
+        loadLiveTeams();
       }
 
       // On load, read back the saved control so the UI reflects what's actually stored.
@@ -994,7 +1105,8 @@ function renderControlUiHtml(url) {
             device_id: $("device").value.trim() || "matrix-01",
             sport: $("sport").value,
             source: $("source").value,
-            team: parseTeamAbbr($("team").value),
+            team: state.view === "timer" ? parseTeamAbbr($("team").value) : String($("teamLive").value || "").trim().toUpperCase(),
+            view: state.view,
             mode: state.display === "clock" ? "idle" : "auto",
             tz: $("tz").value || "ct",
           };
@@ -1116,11 +1228,24 @@ function renderControlUiHtml(url) {
           cookieSet(teamCookieKey(state.sport), state.team);
         }
         closeTeamDropdown();
+        setView("score");
+        loadLiveTeams();
       });
 
       $("team").addEventListener("change", () => {
         state.team = $("team").value;
         cookieSet(teamCookieKey(state.sport), state.team);
+      });
+
+      $("teamLive").addEventListener("change", () => {
+        const v = String($("teamLive").value || "").trim();
+        if (v === TIMER_VALUE) {
+          setView("timer");
+          return;
+        }
+        state.liveTeam = v;
+        try { cookieSet("ui_live_team_" + String(state.sport || "").toLowerCase(), v); } catch {}
+        setView("score");
       });
 
       $("team").addEventListener("focus", () => {
@@ -1130,6 +1255,11 @@ function renderControlUiHtml(url) {
       $("team").addEventListener("input", () => {
         state.team = $("team").value;
         renderTeamDropdown(state.team);
+      });
+
+      $("reloadBtn").addEventListener("click", () => {
+        // Reload with fresh /teams + /control data.
+        try { window.location.reload(); } catch {}
       });
 
       $("teamBtn").addEventListener("click", () => {
@@ -1173,6 +1303,9 @@ function renderControlUiHtml(url) {
       $("settingsModal").addEventListener("click", (e) => {
         if (e.target && e.target.id === "settingsModal") closeSettings();
       });
+
+      // Populate live teams on initial load.
+      loadLiveTeams();
 
       function setBrightness(v) {
         const n = parseFloat(String(v || "").trim());
@@ -1277,6 +1410,16 @@ async function handleGetScore(searchParams, env) {
     return jsonResponse(finalizeDisplayPayload(payload));
   }
 
+  // Timer view: countdown to next game (days:hours:minutes on device).
+  // Implemented for ESPN Pro sports first.
+  if (String(control?.view || "").toLowerCase() === "timer") {
+    if (String(control?.source || "").toLowerCase() === "pro") {
+      payload = await fetchProNextGameCountdown(control, env);
+      return jsonResponse(finalizeDisplayPayload(payload));
+    }
+    // Fallback: if timer requested for unsupported sources, just return normal score payload.
+  }
+
   if (isWorldCupControl(control)) {
     payload = await fetchSoccerScore(control, env, "world-cup");
   } else if (control.source === "pro") {
@@ -1298,6 +1441,37 @@ async function handleGetScore(searchParams, env) {
   }
 
   return jsonResponse(finalizeDisplayPayload(payload));
+}
+
+async function handleGetTeams(searchParams, env) {
+  const sport = (searchParams.get("sport") || "nfl").toString().trim().toLowerCase();
+  const source = (searchParams.get("source") || "pro").toString().trim().toLowerCase();
+
+  // Only implemented for ESPN-backed "pro" sports right now.
+  if (source !== "pro") {
+    return jsonResponse({ sport, source, teams: [], updated_at: Math.floor(Date.now() / 1000) });
+  }
+
+  const baseUrl = env.SPORTS_API_URL;
+  if (!baseUrl) {
+    return jsonResponse({ sport, source, teams: [], updated_at: Math.floor(Date.now() / 1000) });
+  }
+
+  try {
+    const url = buildProUrlForDateCompact(baseUrl, sport, false, formatDateCompact(new Date()));
+    const resp = await fetch(url, {
+      headers: { Accept: "application/json" },
+      cf: { cacheTtl: 15, cacheEverything: false },
+    });
+    if (!resp.ok) {
+      return jsonResponse({ sport, source, teams: [], updated_at: Math.floor(Date.now() / 1000) });
+    }
+    const data = await resp.json().catch(() => null);
+    const teams = extractLiveTeamsFromEspnScoreboard(data);
+    return jsonResponse({ sport, source, teams, updated_at: Math.floor(Date.now() / 1000) });
+  } catch {
+    return jsonResponse({ sport, source, teams: [], updated_at: Math.floor(Date.now() / 1000) });
+  }
 }
 
 function makeDevScorePayload(control) {
@@ -1497,6 +1671,7 @@ function normalizeControl(input, deviceId) {
     "nfl",
     "nba",
     "mlb",
+    "nhl",
     "softball",
     "cbb",
     ...OLYMPIC_TEAM_SPORTS,
@@ -1506,7 +1681,11 @@ function normalizeControl(input, deviceId) {
   ].includes(normalizedSport)
     ? normalizedSport
     : DEFAULT_CONTROL.sport;
-  const team = (input.team || DEFAULT_CONTROL.team || "").toString().trim().toUpperCase();
+  const teamRaw = (input.team || DEFAULT_CONTROL.team || "").toString().trim().toUpperCase();
+  const team = normalizeTeamCodeFromInput(teamRaw);
+
+  const normalizedView = (input.view || "").toString().trim().toLowerCase();
+  const view = ["score", "timer"].includes(normalizedView) ? normalizedView : DEFAULT_CONTROL.view;
   const mode = ["auto", "force-live", "idle"].includes(input.mode)
     ? input.mode
     : DEFAULT_CONTROL.mode;
@@ -1524,11 +1703,22 @@ function normalizeControl(input, deviceId) {
     source,
     sport,
     team,
+    view,
     mode,
     tz,
     brightness,
     updated_at: Math.floor(Date.now() / 1000),
   };
+}
+
+function normalizeTeamCodeFromInput(teamRaw) {
+  const s = (teamRaw || "").toString().trim().toUpperCase();
+  if (!s) return "";
+  // If UI accidentally sends a display string like "Arizona Cardinals (ARI)",
+  // extract the code in parentheses.
+  const m = s.match(/\(([A-Z0-9]{2,10})\)\s*$/);
+  if (m) return m[1];
+  return s;
 }
 
 function isNcaaSoftballControl(control) {
@@ -2253,20 +2443,181 @@ function buildSoccerUrl(baseUrl, mode) {
 
 function buildProUrl(baseUrl, sport, wantsSuperBowl) {
   const compact = formatDateCompact(new Date());
-  if (baseUrl.includes("site.api.espn.com") || baseUrl.includes("apis/site/v2/sports")) {
-    const path = espnSportPath(sport);
-    let url = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${compact}`;
-    if (wantsSuperBowl) {
-      url += "&seasontype=3";
-    }
-    return url;
-  }
+  return buildProUrlForDateCompact(baseUrl, sport, wantsSuperBowl, compact);
 
   return appendQuery(baseUrl, {
     sport,
     event: wantsSuperBowl ? "superbowl" : undefined,
     date: compact,
   });
+}
+
+function buildProUrlForDateCompact(baseUrl, sport, wantsSuperBowl, compact) {
+  const date = String(compact || "").trim() || formatDateCompact(new Date());
+  if (baseUrl.includes("site.api.espn.com") || baseUrl.includes("apis/site/v2/sports")) {
+    const path = espnSportPath(sport);
+    let url = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${encodeURIComponent(date)}`;
+    if (wantsSuperBowl) url += "&seasontype=3";
+    return url;
+  }
+  return appendQuery(baseUrl, {
+    sport,
+    event: wantsSuperBowl ? "superbowl" : undefined,
+    date,
+  });
+}
+
+function buildProUrlRange(baseUrl, sport, wantsSuperBowl, startCompact, endCompact) {
+  const start = String(startCompact || "").trim();
+  const end = String(endCompact || "").trim();
+  if (!start) return buildProUrl(baseUrl, sport, wantsSuperBowl);
+  const dates = end ? `${start}-${end}` : start;
+  if (baseUrl.includes("site.api.espn.com") || baseUrl.includes("apis/site/v2/sports")) {
+    const path = espnSportPath(sport);
+    let url = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${encodeURIComponent(dates)}`;
+    if (wantsSuperBowl) url += "&seasontype=3";
+    return url;
+  }
+  // Best-effort for non-ESPN endpoints.
+  return appendQuery(baseUrl, { sport, date: start, event: wantsSuperBowl ? "superbowl" : undefined });
+}
+
+function extractLiveTeamsFromEspnScoreboard(data) {
+  const teams = [];
+  const seen = new Set();
+  const events = Array.isArray(data?.events) ? data.events : [];
+  for (const event of events) {
+    const comp = (event?.competitions && event.competitions[0]) || null;
+    if (!comp) continue;
+    const statusObj = comp.status?.type || event.status?.type || {};
+    const status = normalizeStatus(statusObj?.name || statusObj?.state || statusObj?.description || statusObj?.shortDetail || "");
+    if (status !== "LIVE") continue;
+    const competitors = Array.isArray(comp?.competitors) ? comp.competitors : [];
+    for (const c of competitors) {
+      const t = c?.team || {};
+      const abbr = String(t.abbreviation || "").trim().toUpperCase();
+      if (!abbr) continue;
+      if (seen.has(abbr)) continue;
+      seen.add(abbr);
+      teams.push({
+        abbr,
+        name: String(t.displayName || t.shortDisplayName || t.name || abbr).trim() || abbr,
+      });
+    }
+  }
+  teams.sort((a, b) => (a.abbr || "").localeCompare(b.abbr || ""));
+  return teams;
+}
+
+function addDaysUtcCompact(date, days) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  d.setUTCDate(d.getUTCDate() + (Number(days) || 0));
+  return formatDateCompact(d);
+}
+
+async function fetchProNextGameCountdown(control, env) {
+  const baseUrl = env.SPORTS_API_URL;
+  if (!baseUrl) {
+    return makeProMock(control, "SCHEDULED");
+  }
+
+  const sport = (control?.sport || "nfl").toString().trim().toLowerCase() || "nfl";
+  const requestedTeam = (control?.team || "TEAM").toString().trim().toUpperCase() || "TEAM";
+  const wantsSuperBowl = isSuperBowlControl(control);
+
+  // Look ahead so we can find the next scheduled game.
+  const today = new Date();
+  const start = formatDateCompact(today);
+  const end = addDaysUtcCompact(today, 14);
+  const upstreamUrl = buildProUrlRange(baseUrl, sport, wantsSuperBowl, start, end);
+
+  try {
+    const resp = await fetch(upstreamUrl, {
+      headers: { Accept: "application/json" },
+      cf: { cacheTtl: 30, cacheEverything: false },
+    });
+    if (!resp.ok) return makeProMock(control, "SCHEDULED");
+
+    const data = await resp.json().catch(() => null);
+    const next = pickNextScheduledGameFromEspnScoreboard(data, requestedTeam);
+    if (!next) {
+      return withTeamMeta({
+        source: "pro",
+        sport,
+        team: requestedTeam,
+        opponent: "TBD",
+        team_score: null,
+        opp_score: null,
+        status: "NONE",
+        at: "Neutral",
+      });
+    }
+
+    const normalized = normalizeHeadToHeadGame({
+      game: next,
+      requestedTeam,
+      source: "pro",
+      sport,
+      gameTime: next.game_time || next.start_time || null,
+    });
+
+    normalized.status = "SCHEDULED";
+    normalized.team_score = null;
+    normalized.opp_score = null;
+
+    const withTimer = withCountdownFromGame(normalized, next, true);
+    return withTeamMeta(withTimer, next);
+  } catch {
+    return makeProMock(control, "SCHEDULED");
+  }
+}
+
+function pickNextScheduledGameFromEspnScoreboard(data, requestedTeam) {
+  const req = String(requestedTeam || "").trim().toUpperCase();
+  if (!req) return null;
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const nowMs = Date.now();
+
+  let best = null;
+  let bestStart = null;
+
+  for (const event of events) {
+    const comp = (event?.competitions && event.competitions[0]) || null;
+    if (!comp) continue;
+    const competitors = Array.isArray(comp?.competitors) ? comp.competitors : [];
+    const hasReq = competitors.some((c) => String(c?.team?.abbreviation || "").trim().toUpperCase() === req);
+    if (!hasReq) continue;
+
+    const startMs = getGameStartMs({ game_time: comp.date || event.date || null, start_time: comp.date || event.date || null });
+    if (!startMs || startMs <= nowMs) continue;
+
+    if (bestStart === null || startMs < bestStart) {
+      const homeC = competitors.find((c) => (c.homeAway || "").toLowerCase() === "home") || competitors[0];
+      const awayC = competitors.find((c) => (c.homeAway || "").toLowerCase() === "away") || competitors[1];
+      if (!homeC || !awayC) continue;
+      const homeTeam = homeC.team || {};
+      const awayTeam = awayC.team || {};
+      bestStart = startMs;
+      best = {
+        home: String(homeTeam.abbreviation || homeTeam.shortDisplayName || homeTeam.displayName || "HOME").trim() || "HOME",
+        away: String(awayTeam.abbreviation || awayTeam.shortDisplayName || awayTeam.displayName || "AWAY").trim() || "AWAY",
+        home_score: null,
+        away_score: null,
+        status: "SCHEDULED",
+        game_time: comp.date || event.date || null,
+        at: "Neutral",
+        home_primary: normalizeHexColor(homeTeam.color),
+        home_secondary: normalizeHexColor(homeTeam.alternateColor),
+        away_primary: normalizeHexColor(awayTeam.color),
+        away_secondary: normalizeHexColor(awayTeam.alternateColor),
+        event_name: event.name || null,
+        event: event.shortName || event.name || null,
+        competition: data?.leagues?.[0]?.name || null,
+      };
+    }
+  }
+
+  return best;
 }
 
 function buildNcaaBasketballUrl(baseUrl) {
@@ -2321,6 +2672,7 @@ function espnSportPath(sport) {
   if (s === "nfl") return "football/nfl";
   if (s === "nba") return "basketball/nba";
   if (s === "mlb") return "baseball/mlb";
+  if (s === "nhl") return "hockey/nhl";
   if (s === "cbb") return "basketball/mens-college-basketball";
   return "football/nfl";
 }
@@ -3037,6 +3389,13 @@ function toHex2(n) {
 function normalizeStatus(value) {
   const raw = (value || "").toString().trim().toUpperCase();
   if (!raw) return "SCHEDULED";
+  // ESPN often uses STATUS_* or short states like IN/POST.
+  if (raw === "IN" || raw === "IN GAME" || raw === "INGAME") return "LIVE";
+  if (raw === "POST") return "FINAL";
+  if (raw.includes("IN_PROGRESS") || raw.includes("IN-PROGRESS") || raw.includes("IN PROGRESS")) return "LIVE";
+  if (raw.includes("STATUS_IN_PROGRESS") || raw.includes("STATUS_IN")) return "LIVE";
+  if (raw.includes("STATUS_HALFTIME") || raw.includes("HALFTIME")) return "LIVE";
+  if (raw.includes("STATUS_FINAL") || raw.includes("STATUS_END") || raw.includes("STATUS_COMPLETE")) return "FINAL";
   if (["LIVE", "IN_PROGRESS", "IN-PROGRESS", "IN PLAY", "INPLAY", "PAUSED", "Q1", "Q2", "Q3", "Q4", "HALF"].includes(raw)) {
     return "LIVE";
   }
