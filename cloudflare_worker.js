@@ -255,6 +255,7 @@ function renderControlUiHtml(url) {
       .switch { width: 46px; height: 28px; border-radius: 999px; border: 1px solid var(--border); background: rgba(127,127,127,0.12); position: relative; }
       .switch > span { width: 24px; height: 24px; border-radius: 999px; background: var(--text); position: absolute; top: 1px; left: 1px; transition: transform 120ms ease; }
       .switch.on > span { transform: translateX(18px); }
+      .switch.disabled { opacity: 0.45; pointer-events: none; }
       .advHidden { display: none !important; }
       .combo { position: relative; display: flex; gap: 8px; align-items: center; }
       .combo input { flex: 1; }
@@ -344,7 +345,7 @@ function renderControlUiHtml(url) {
     <div class="wrap">
       <div class="topbar">
         <div class="titleWrap">
-          <h1>Matrix Scoreboard Control</h1>
+          <h1>Scoreboard Control</h1>
           <button id="infoBtn" class="infoBtn" type="button" aria-label="Info">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <path d="M12 17V11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -398,7 +399,7 @@ function renderControlUiHtml(url) {
           </select>
 
           <div id="liveTeamWrap">
-            <label for="teamLive">Team (Live)</label>
+            <label for="teamLive">Team</label>
             <select id="teamLive"></select>
             <div class="muted" style="margin-top:8px;">Teams are loaded from the selected source (ESPN for Pro, NCAA API for NCAA sports).</div>
 
@@ -848,6 +849,28 @@ function renderControlUiHtml(url) {
         $("timerTeam").disabled = state.view !== "timer";
       }
 
+      function effectiveSource() {
+        try {
+          const sport = $("sport").value.trim() || "nfl";
+          const src = $("source").value.trim() || (sportToSource[sport] || "pro");
+          return String(src || "pro").trim().toLowerCase() || "pro";
+        } catch {
+          return "pro";
+        }
+      }
+
+      function applyTimerAvailability() {
+        const src = effectiveSource();
+        const allowed = src === "pro";
+        const sw = $("timerSwitch");
+        sw.classList.toggle("disabled", !allowed);
+        sw.setAttribute("aria-disabled", allowed ? "false" : "true");
+        if (!allowed && state.view === "timer") {
+          setView("score");
+        }
+        $("timerTeam").disabled = !allowed || state.view !== "timer";
+      }
+
       function buildTimerTeamOptions() {
         const sel = $("timerTeam");
         if (!sel) return;
@@ -930,6 +953,7 @@ function renderControlUiHtml(url) {
       applyDisplayMode();
       setView(state.view);
       buildTimerTeamOptions();
+      applyTimerAvailability();
 
       function buildControlPayload(opts) {
         const device_id = $("device").value.trim() || "matrix-01";
@@ -1105,6 +1129,7 @@ function renderControlUiHtml(url) {
         $("source").value = source;
         $("tz").value = tz;
         applyDisplayMode();
+        applyTimerAvailability();
 
         const teamDisplay = teamDisplayFromControl(sport, team);
         state.team = teamDisplay;
@@ -1266,6 +1291,7 @@ function renderControlUiHtml(url) {
         closeTeamDropdown();
         setView("score");
         buildTimerTeamOptions();
+        applyTimerAvailability();
         loadLiveTeams();
       });
 
@@ -1287,6 +1313,7 @@ function renderControlUiHtml(url) {
       });
 
       function toggleTimer() {
+        if ($("timerSwitch").classList.contains("disabled")) return;
         const enabled = !($("timerSwitch").classList.contains("on"));
         setView(enabled ? "timer" : "score");
       }
