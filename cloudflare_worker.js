@@ -908,7 +908,7 @@ function renderControlUiHtml(url) {
 
       function applyTimerAvailability() {
         const src = effectiveSource();
-        const allowed = src === "pro";
+        const allowed = src === "pro" || src === "ncaa-softball" || src === "ncaa-basketball";
         const sw = $("timerSwitch");
         sw.classList.toggle("disabled", !allowed);
         sw.setAttribute("aria-disabled", allowed ? "false" : "true");
@@ -1515,6 +1515,8 @@ function renderControlUiHtml(url) {
         cookieSet("ui_src_override", "1");
         state.source = $("source").value;
         cookieSet("ui_source", state.source);
+        applyTimerAvailability();
+        loadLiveTeams();
       });
     </script>
   </body>
@@ -1579,12 +1581,23 @@ async function handleGetScore(searchParams, env) {
   }
 
   // Timer view: countdown to next game (days:hours:minutes on device).
-  // Implemented for ESPN Pro sports first.
+  // Implemented for ESPN Pro sports and NCAA (when start times are available).
   if (String(control?.view || "").toLowerCase() === "timer") {
     if (String(control?.source || "").toLowerCase() === "pro") {
       payload = await fetchProNextGameCountdown(control, env, { debug });
       return jsonResponse(finalizeDisplayPayload(payload));
     }
+
+    if (isNcaaBasketballControl(control)) {
+      payload = await fetchNcaaBasketballNextGameCountdown(control, env);
+      return jsonResponse(finalizeDisplayPayload(payload));
+    }
+
+    if (isNcaaSoftballControl(control)) {
+      payload = await fetchNcaaSoftballNextGameCountdown(control, env);
+      return jsonResponse(finalizeDisplayPayload(payload));
+    }
+
     // Fallback: if timer requested for unsupported sources, just return normal score payload.
   }
 
@@ -2786,6 +2799,106 @@ async function fetchNcaaSoftballScore(control, env) {
   } catch {
     return makeNcaaSoftballMock(requested, "SCHEDULED");
   }
+}
+
+function pickNcaaNextScheduledGame(candidates, requestedTeam) {
+  const req = String(requestedTeam || "").trim().toUpperCase();
+  const pool = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
+  if (!pool.length || !req) return null;
+  const now = Date.now();
+
+  let best = null;
+  let bestMs = null;
+  for (const g of pool) {
+    const home = String(g?.home_team || g?.home || "").trim().toUpperCase();
+    const away = String(g?.away_team || g?.away || "").trim().toUpperCase();
+    if (home !== req && away !== req) continue;
+    const ms = getGameStartMs(g);
+    if (ms === null || ms <= now) continue;
+    if (bestMs === null || ms < bestMs) {
+      bestMs = ms;
+      best = g;
+    }
+  }
+  return best;
+}
+
+async function fetchNcaaSoftballNextGameCountdown(control, env) {
+  const requested = (control.team || "").toString().trim().toUpperCase();
+  if (!requested) return makeNcaaSoftballMock("TEAM", "SCHEDULED");
+
+  const upstreamUrl = `${NCAA_API_BASE}/scoreboard/softball/d3`;
+  try {
+    const resp = await fetch(upstreamUrl, {
+      headers: { Accept: "application/json" },
+      cf: { cacheTtl: 20, cacheEverything: false },
+    });
+    if (!resp.ok) return makeNcaaSoftballMock(requested, "SCHEDULED");
+
+    const data = await resp.json().catch(() => null);
+    const games = extractNcaaScoreboardGameCandidates(data);
+    const next = pickNcaaNextScheduledGame(games, requested);
+    if (!next) return makeNcaaSoftballMock(requested, "SCHEDULED");
+
+    const normalized = normalizeHeadToHeadGame({
+      game: next,
+      requestedTeam: requested,
+      source: "ncaa-softball",
+      sport: "softball",
+      gameTime: next.start_time || next.game_time || null,
+    });
+    normalized.status = "SCHEDULED";
+    normalized.team_score = null;
+    normalized.opp_score = null;
+
+    const withTimer = withCountdownFromGame(normalized, next, true);
+    return withTeamMeta(withTimer, next);
+  } catch {
+    return makeNcaaSoftballMock(requested, "SCHEDULED");
+  }
+}
+
+async function fetchNcaaBasketballNextGameCountdown(control, env) {
+  const requested = (control.team || "").toString().trim().toUpperCase();
+  if (!requested) return makeNcaaBasketballMock("TEAM", "SCHEDULED");
+
+  const year = inferMarchMadnessYear();
+  const tryYears = [year, year - 1].filter((y, i, a) => Number.isFinite(y) && a.indexOf(y) === i);
+  for (const y of tryYears) {
+    const upstreamUrl = `${NCAA_API_BASE}/brackets/basketball-men/d1/${encodeURIComponent(String(y))}`;
+    try {
+      const resp = await fetch(upstreamUrl, {
+        headers: { Accept: "application/json" },
+        cf: { cacheTtl: 60, cacheEverything: false },
+      });
+      if (!resp.ok) continue;
+
+      const data = await resp.json().catch(() => null);
+      const games = extractNcaaBracketGameCandidates(data);
+      const next = pickNcaaNextScheduledGame(games, requested);
+      if (!next) continue;
+
+      const normalized = normalizeHeadToHeadGame({
+        game: next,
+        requestedTeam: requested,
+        source: "ncaa-basketball",
+        sport: "cbb",
+        gameTime: next.start_time || next.game_time || null,
+      });
+      normalized.status = "SCHEDULED";
+      normalized.team_score = null;
+      normalized.opp_score = null;
+
+      const withTimer = withCountdownFromGame(normalized, next, true);
+      const out = withTeamMeta(withTimer, next);
+      out.tournament = "NCAA March Madness";
+      return out;
+    } catch {
+      // try previous year
+    }
+  }
+
+  return makeNcaaBasketballMock(requested, "SCHEDULED");
 }
 
 function extractNcaaBracketGameCandidates(data) {
