@@ -166,6 +166,21 @@ def _hex_to_rgb_int(v, default=0xFFFFFF):
         return int(default)
 
 
+def _clamp_dark_to_white(rgb_int, min_luma=0.12):
+    try:
+        v = int(rgb_int) & 0xFFFFFF
+    except Exception:
+        return 0xFFFFFF
+
+    r = (v >> 16) & 0xFF
+    g = (v >> 8) & 0xFF
+    b = v & 0xFF
+    luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+    if luma < float(min_luma):
+        return 0xFFFFFF
+    return v
+
+
 def _abbr3(v, default=""):
     s = str(v or "").strip().upper()
     if not s:
@@ -203,8 +218,8 @@ def _set_top_labels(score_obj):
     )
     at = str((score_obj or {}).get("at") or "").strip().lower()
 
-    team_col = _hex_to_rgb_int((score_obj or {}).get("team_primary"))
-    opp_col = _hex_to_rgb_int((score_obj or {}).get("opp_primary"))
+    team_col = _clamp_dark_to_white(_hex_to_rgb_int((score_obj or {}).get("team_primary")))
+    opp_col = _clamp_dark_to_white(_hex_to_rgb_int((score_obj or {}).get("opp_primary")))
 
     if at == "away":
         home_text, away_text = opp_abbr, team_abbr

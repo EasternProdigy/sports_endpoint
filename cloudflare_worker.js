@@ -1936,14 +1936,18 @@ async function handleGetGames(searchParams, env) {
       .filter((g) => normalizeStatus(g.status || g.state || g.game_status || "") === "LIVE")
       .map((g) => {
         const id = String(g.event_id || g.eventId || g.id || "").trim();
-        const home = normalizeAbbr(g.home_team || g.home || g.homeTeam || "HOME");
-        const away = normalizeAbbr(g.away_team || g.away || g.awayTeam || "AWAY");
-        const label = `${away} @ ${home}`;
+        const homeAbbr = normalizeAbbr(g.home_abbr || g.home_team || g.home || g.homeTeam || "HOME");
+        const awayAbbr = normalizeAbbr(g.away_abbr || g.away_team || g.away || g.awayTeam || "AWAY");
+        const homeName = toDisplayName(g.home_name || g.homeName || g.home_team || g.home || g.homeTeam || homeAbbr);
+        const awayName = toDisplayName(g.away_name || g.awayName || g.away_team || g.away || g.awayTeam || awayAbbr);
+        const label = `${awayName} vs. ${homeName}`;
         return {
           id,
           label,
-          home_abbr: home,
-          away_abbr: away,
+          home_abbr: homeAbbr,
+          away_abbr: awayAbbr,
+          home_name: homeName,
+          away_name: awayName,
           status: normalizeStatus(g.status || g.state || g.game_status || ""),
           game_time: g.game_time || g.start_time || g.start || null,
         };
@@ -3642,6 +3646,11 @@ function adaptEspnScoreboard(data, hint = {}) {
     const homeTeam = homeC.team || {};
     const awayTeam = awayC.team || {};
 
+    const homeAbbr = String(homeTeam.abbreviation || "").trim().toUpperCase();
+    const awayAbbr = String(awayTeam.abbreviation || "").trim().toUpperCase();
+    const homeName = String(homeTeam.displayName || homeTeam.shortDisplayName || homeTeam.name || homeAbbr || "HOME").trim() || "HOME";
+    const awayName = String(awayTeam.displayName || awayTeam.shortDisplayName || awayTeam.name || awayAbbr || "AWAY").trim() || "AWAY";
+
     const pickTeamKey = (t) => {
       if (preferNames) return t.shortDisplayName || t.displayName || t.abbreviation || "TEAM";
       return t.abbreviation || t.shortDisplayName || t.displayName || "TEAM";
@@ -3651,6 +3660,10 @@ function adaptEspnScoreboard(data, hint = {}) {
       event_id: String(event.id || comp.id || "").trim() || undefined,
       home: pickTeamKey(homeTeam) || "HOME",
       away: pickTeamKey(awayTeam) || "AWAY",
+      home_abbr: homeAbbr || undefined,
+      away_abbr: awayAbbr || undefined,
+      home_name: homeName || undefined,
+      away_name: awayName || undefined,
       home_score: parseNullableInt(homeC.score),
       away_score: parseNullableInt(awayC.score),
       status: normalizeStatus((comp.status && comp.status.type && (comp.status.type.name || comp.status.type.state)) || event.status?.type?.name || "SCHEDULED"),
