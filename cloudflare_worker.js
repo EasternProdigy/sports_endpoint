@@ -551,6 +551,9 @@ function renderControlUiHtml(url) {
         document.cookie = k + "=" + encodeURIComponent(v) + "; path=/; max-age=" + (60 * 60 * 24 * 365);
       };
 
+      // Keep UI-side validation in sync with Worker-side brightness cap.
+      const MAX_BRIGHTNESS = ${MAX_BRIGHTNESS};
+
       const state = {
         advanced: false,
         dark: cookieGet("ui_dark") === "1",
