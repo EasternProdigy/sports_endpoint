@@ -54,7 +54,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.23-ui15";
+const WORKER_VERSION = "2026.02.23-ui16";
 
 // Wellesley softball schedule (used for Wellesley-only softball timers).
 const WELLESLEYBLUE_SOFTBALL_SCHEDULE_URL = "https://wellesleyblue.com/sports/softball/schedule/2025";
@@ -1920,56 +1920,74 @@ async function fetchWellesleyBlueSoftballNextGameCountdown(control, env) {
 
     const nowMs = Date.now();
 
-    // Prefer parsing the site's own countdown so we match what users see on WellesleyBlue
-    // and avoid timezone conversion edge-cases.
-    // Example: "Next Game Mar 16 / 10:00 AM 20 days 14 hours 38 Mins 10 Secs"
-    const cd = html.match(/Next\s+Game\b[\s\S]{0,300}?(\d{1,3})\s+days\s+(\d{1,2})\s+hours\s+(\d{1,2})\s+Mins\s+(\d{1,2})\s+Secs/i);
-    let countdownSeconds = null;
-    if (cd) {
-      const d = Number(cd[1]);
-      const h = Number(cd[2]);
-      const m2 = Number(cd[3]);
-      const s2 = Number(cd[4]);
-      if ([d, h, m2, s2].every((n) => Number.isFinite(n) && n >= 0)) {
-        countdownSeconds = Math.max(0, Math.trunc(d * 86400 + h * 3600 + m2 * 60 + s2));
+    // The visible "Next Game" countdown widget is not reliably server-rendered.
+    // Sidearm embeds the schedule as JSON-LD SportsEvent scripts, which *is* present
+    // in the HTML that Cloudflare fetch() receives.
+    const events = [];
+    const scriptRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let sm;
+    while ((sm = scriptRe.exec(html)) !== null) {
+      const raw = String(sm[1] || "").trim();
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw);
+        const arr = Array.isArray(parsed) ? parsed : [parsed];
+        for (const it of arr) {
+          if (it && typeof it === "object") events.push(it);
+        }
+      } catch {
+        // ignore
       }
     }
 
-    // Example snippet includes:
-    // "Live video for Softball at Salem State University on March 16, 2026 at 10:00 AM"
-    // or "... Softball vs Springfield College on April 9, 2025 at 5:00 PM"
-    let where = "vs";
-    let opponentName = "OPP";
-    let startMs = null;
+    const toParts = (isoLike) => {
+      const s = String(isoLike || "").trim();
+      const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+      if (!m) return null;
+      return {
+        year: Number(m[1]),
+        month: Number(m[2]),
+        day: Number(m[3]),
+        hour24: Number(m[4]),
+        minute: Number(m[5]),
+      };
+    };
 
-    // Try to parse opponent + exact date/time (best for start timestamp).
-    const re = /Softball\s+(at|vs\.?|vs)\s+([^\n\r<]+?)\s+on\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})\s+at\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i;
-    const m = html.match(re);
-    if (m) {
-      where = String(m[1] || "").trim().toLowerCase();
-      opponentName = String(m[2] || "OPP").trim().replace(/\s+/g, " ");
-      const mon = parseMonthAbbrevToNumber(m[3]);
-      const day = Number(m[4]);
-      const year = Number(m[5]);
-      const hh = Number(m[6]);
-      const mm = Number(m[7]);
-      const ap = String(m[8] || "").trim().toUpperCase();
-      if (mon && Number.isFinite(day) && Number.isFinite(year) && Number.isFinite(hh) && Number.isFinite(mm)) {
-        const hour24 = (ap === "PM" ? (hh % 12) + 12 : (hh % 12));
-        // WellesleyBlue times are Eastern.
-        startMs = zonedLocalToUtcMs({ year, month: mon, day, hour24, minute: mm, timeZone: "America/New_York" });
-      }
-    }
+    const normName = (v) => String(v || "").trim().replace(/\s+/g, " ");
+    const candidates = events
+      .filter((e) => {
+        const t = e?.["@type"];
+        if (t === "SportsEvent") return true;
+        if (Array.isArray(t) && t.includes("SportsEvent")) return true;
+        return false;
+      })
+      .map((e) => {
+        const parts = toParts(e?.startDate);
+        if (!parts) return null;
+        // startDate values are emitted without timezone; treat as Eastern.
+        const startMs = zonedLocalToUtcMs({ ...parts, timeZone: "America/New_York" });
+        return {
+          startMs,
+          name: normName(e?.name),
+          homeTeam: normName(e?.homeTeam?.name),
+          awayTeam: normName(e?.awayTeam?.name),
+        };
+      })
+      .filter(Boolean)
+      .filter((x) => Number.isFinite(x.startMs) && x.startMs > nowMs)
+      .sort((a, b) => a.startMs - b.startMs);
 
-    // If we couldn't compute an exact start time, derive one from the countdown.
-    if (startMs === null && countdownSeconds !== null) {
-      startMs = nowMs + (countdownSeconds * 1000);
-    }
-
-    // Last resort: without either countdown or start time, return a mock.
-    if (startMs === null && countdownSeconds === null) {
+    const next = candidates[0] || null;
+    if (!next) {
       return makeNcaaSoftballMock("WELLESLEY", "SCHEDULED");
     }
+
+    const wellesleyName = "Wellesley College";
+    const wellIsAway = next.awayTeam && next.awayTeam.toLowerCase() === wellesleyName.toLowerCase();
+    const at = wellIsAway ? "Away" : "Home";
+    const opponentName = wellIsAway ? (next.homeTeam || "OPP") : (next.awayTeam || "OPP");
+    const startMs = next.startMs;
+    const countdownSeconds = Math.max(0, Math.floor((startMs - nowMs) / 1000));
 
     const payload = {
       source: "ncaa-softball",
@@ -1979,27 +1997,22 @@ async function fetchWellesleyBlueSoftballNextGameCountdown(control, env) {
       team_score: null,
       opp_score: null,
       status: "SCHEDULED",
-      at: where.startsWith("at") ? "Away" : "Home",
+      at,
       game_time: startMs ? new Date(startMs).toISOString() : null,
     };
 
-    let out;
-    if (countdownSeconds !== null) {
-      out = {
-        ...payload,
-        now_unix: Math.floor(nowMs / 1000),
-        next_game_time_unix: startMs ? Math.floor(startMs / 1000) : undefined,
-        countdown_seconds: countdownSeconds,
-        countdown_text: formatCountdown(countdownSeconds),
-        countdown_active: true,
-      };
-    } else {
-      out = withCountdownFromMs(payload, startMs, true);
-    }
+    const out = {
+      ...payload,
+      now_unix: Math.floor(nowMs / 1000),
+      next_game_time_unix: Math.floor(startMs / 1000),
+      countdown_seconds: countdownSeconds,
+      countdown_text: formatCountdown(countdownSeconds),
+      countdown_active: true,
+    };
 
-    out = withTeamMeta(out, null);
-    out.opponent_name = opponentName;
-    return out;
+    const withMeta = withTeamMeta(out, null);
+    withMeta.opponent_name = opponentName;
+    return withMeta;
   } catch {
     return makeNcaaSoftballMock("WELLESLEY", "SCHEDULED");
   }
