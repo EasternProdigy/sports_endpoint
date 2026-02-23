@@ -198,6 +198,10 @@ function renderControlUiHtml(url) {
         color: var(--fieldText);
         outline: none;
       }
+      select:disabled, input:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
       .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
       .row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
       .btns { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 12px; }
@@ -554,6 +558,38 @@ function renderControlUiHtml(url) {
       // Keep UI-side validation in sync with Worker-side brightness cap.
       const MAX_BRIGHTNESS = ${MAX_BRIGHTNESS};
 
+      // Debug logging (visible in browser DevTools Console).
+      // Does not log bearer token values.
+      const UI_DEBUG = true;
+      const uiNow = () => {
+        try { return new Date().toISOString(); } catch { return ""; }
+      };
+      const uiLog = (...args) => {
+        if (!UI_DEBUG) return;
+        try { console.log("[ui]", uiNow(), ...args); } catch {}
+      };
+      const uiWarn = (...args) => {
+        if (!UI_DEBUG) return;
+        try { console.warn("[ui]", uiNow(), ...args); } catch {}
+      };
+      const uiErr = (...args) => {
+        if (!UI_DEBUG) return;
+        try { console.error("[ui]", uiNow(), ...args); } catch {}
+      };
+
+      window.addEventListener("error", (e) => {
+        uiErr("window.error", {
+          message: e?.message,
+          filename: e?.filename,
+          lineno: e?.lineno,
+          colno: e?.colno,
+          error: String(e?.error || ""),
+        });
+      });
+      window.addEventListener("unhandledrejection", (e) => {
+        uiErr("unhandledrejection", { reason: String(e?.reason || "") });
+      });
+
       const state = {
         advanced: false,
         dark: cookieGet("ui_dark") === "1",
@@ -849,7 +885,15 @@ function renderControlUiHtml(url) {
         state.view = (v === "timer") ? "timer" : "score";
         cookieSet("ui_view", state.view);
         setSwitch($("timerSwitch"), state.view === "timer");
-        $("timerTeam").disabled = state.view !== "timer";
+
+        const timerOn = state.view === "timer";
+        // Timer Team is only usable when timer is enabled.
+        $("timerTeam").disabled = !timerOn;
+
+        // When timer is enabled, lock sport + team selection to avoid confusion.
+        // (User must choose a Timer Team.)
+        $("sport").disabled = timerOn;
+        $("teamLive").disabled = timerOn;
       }
 
       function effectiveSource() {
@@ -872,6 +916,11 @@ function renderControlUiHtml(url) {
           setView("score");
         }
         $("timerTeam").disabled = !allowed || state.view !== "timer";
+        if (!allowed) {
+          // Non-pro sources don't support timer; ensure sport/team aren't locked.
+          $("sport").disabled = false;
+          $("teamLive").disabled = false;
+        }
       }
 
       function buildTimerTeamOptions() {
@@ -904,11 +953,13 @@ function renderControlUiHtml(url) {
           const sport = $("sport").value.trim() || "nfl";
           const tz = $("tz").value || "ct";
           const source = $("source").value.trim() || (sportToSource[sport] || "pro");
+          uiLog("loadLiveTeams", { sport, source, tz });
           const resp = await getJson(
             "/teams?sport=" + encodeURIComponent(sport) +
             "&source=" + encodeURIComponent(source) +
             "&tz=" + encodeURIComponent(tz)
           );
+          uiLog("/teams result", { status: resp?.status, keys: resp?.json ? Object.keys(resp.json) : undefined });
           const teams = (resp?.status === 200 && resp?.json && Array.isArray(resp.json.teams)) ? resp.json.teams : [];
 
           const sel = $("teamLive");
@@ -982,6 +1033,17 @@ function renderControlUiHtml(url) {
 
       async function postControl(payload) {
         const token = $("token").value.trim();
+        uiLog("POST /control", {
+          device_id: payload?.device_id,
+          sport: payload?.sport,
+          source: payload?.source,
+          team: payload?.team,
+          view: payload?.view,
+          mode: payload?.mode,
+          tz: payload?.tz,
+          brightness: payload?.brightness,
+          token: token ? "(provided)" : "(none)",
+        });
         cookieSet("ui_token", token);
         cookieSet("ui_device", $("device").value.trim());
         cookieSet("ui_sport", $("sport").value.trim());
@@ -1005,12 +1067,15 @@ function renderControlUiHtml(url) {
           body: JSON.stringify(payload),
         });
         const txt = await res.text();
+        uiLog("/control response", { status: res.status, bodyPreview: String(txt || "").slice(0, 600) });
         try { return { status: res.status, json: JSON.parse(txt) }; } catch { return { status: res.status, text: txt }; }
       }
 
       async function getJson(path) {
+        uiLog("GET", path);
         const res = await fetch(path, { method: "GET" });
         const txt = await res.text();
+        uiLog("GET response", { path, status: res.status, bodyPreview: String(txt || "").slice(0, 600) });
         try { return { status: res.status, json: JSON.parse(txt) }; } catch { return { status: res.status, text: txt }; }
       }
 
@@ -1089,6 +1154,17 @@ function renderControlUiHtml(url) {
 
       function applyControlToUi(control) {
         if (!control || typeof control !== "object") return;
+
+        uiLog("applyControlToUi", {
+          device_id: control?.device_id,
+          sport: control?.sport,
+          source: control?.source,
+          team: control?.team,
+          view: control?.view,
+          mode: control?.mode,
+          tz: control?.tz,
+          brightness: control?.brightness,
+        });
 
         const device_id = String(control.device_id || "").trim() || "matrix-01";
         const sport = String(control.sport || "").trim() || "nfl";
@@ -1194,6 +1270,13 @@ function renderControlUiHtml(url) {
           show({ sending: payload });
           const resp = await postControl(payload);
 
+          uiLog("send result", {
+            status: resp?.status,
+            ok: !!resp?.json?.ok,
+            error: resp?.json?.error,
+            detail: resp?.json?.detail,
+          });
+
           // Always show the response (advanced users), but also keep the form in sync.
           show(resp);
 
@@ -1214,6 +1297,7 @@ function renderControlUiHtml(url) {
             setTimeout(() => setSendState("", null), 1400);
           }
         } catch (e) {
+          uiErr("send threw", String(e && e.message ? e.message : e));
           show({ error: String(e && e.message ? e.message : e) });
           setSendState("err", "Error");
           setTimeout(() => setSendState("", null), 1400);
@@ -1512,6 +1596,20 @@ async function handleGetScore(searchParams, env) {
       : isRegularSoccerControl(control)
         ? await fetchSoccerScore(control, env, "regular")
         : await fetchProScore(control, env, { debug });
+
+    // If "score" view can't find a relevant game (offseason/no events in range),
+    // fall back to a next-game countdown so the board shows a timer instead of NOT ON.
+    if (String(control?.view || "score").toLowerCase() === "score") {
+      const hasScore = payload && payload.team_score !== null && payload.team_score !== undefined && payload.opp_score !== null && payload.opp_score !== undefined;
+      const hasCountdown = payload && payload.countdown_active === true;
+      const unavailable = payload && (payload.view_unavailable === true || String(payload.status || "").toUpperCase() === "NONE");
+      if ((!hasScore && !hasCountdown) || unavailable) {
+        const countdown = await fetchProNextGameCountdown(control, env, { debug });
+        if (countdown && countdown.countdown_active === true) {
+          payload = countdown;
+        }
+      }
+    }
   } else if (isOlympicsControl(control)) {
     payload = isOlympicIndividualSport(control.sport)
       ? await fetchIndividualSportScore(control, env, "olympics")

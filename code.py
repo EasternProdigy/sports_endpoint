@@ -12,18 +12,10 @@ import time
 import gc
 
 import board
-import busio
 import displayio
 import terminalio
-
-from digitalio import DigitalInOut
 from adafruit_display_text.label import Label
-from adafruit_matrixportal.matrixportal import MatrixPortal
-
-from adafruit_esp32spi import adafruit_esp32spi
-from adafruit_esp32spi.adafruit_esp32spi_wifimanager import WiFiManager
-import adafruit_connection_manager
-import adafruit_requests
+import rtc
 
 
 def env(name, default=""):
@@ -60,6 +52,11 @@ CLOCK_TZ = env("CLOCK_TZ", "ct").strip().lower()  # utc|et|ct|mt|pt
 
 CONTROL_POLL = env_int("CONTROL_POLL_SECONDS", 15)
 SCORE_POLL = env_int("REMOTE_SCORE_POLL_ACTIVE_SECONDS", 10)
+
+# Sync the board's RTC from the Worker via HTTP Date header.
+# If your RTC isn't set, time.time() will be wrong and the clock will drift from a fake base.
+TIME_SYNC_INTERVAL_SECONDS = env_int("TIME_SYNC_INTERVAL_SECONDS", 6 * 60 * 60)
+TIME_SYNC_PATH = env("TIME_SYNC_PATH", "/__version").strip() or "/__version"
 
 BOOT_BRIGHTNESS = env_float("BOOT_BRIGHTNESS", 0.01)
 DISPLAY_BRIGHTNESS = env_float("DISPLAY_BRIGHTNESS", 0.03)
@@ -100,14 +97,26 @@ def clamp_brightness(v):
     return v
 
 
-mp = MatrixPortal(status_neopixel=board.NEOPIXEL, use_wifi=False, debug=False)
-display = mp.display
+mp = None
 
+# Prefer the built-in display object when present (fewer moving parts).
 try:
-    mp.status_neopixel.brightness = 0
-    mp.status_neopixel.fill(0)
+    display = board.DISPLAY
 except Exception:
-    pass
+    display = None
+
+if display is None:
+    # Fall back to MatrixPortal helper.
+    from adafruit_matrixportal.matrixportal import MatrixPortal
+    mp = MatrixPortal(status_neopixel=getattr(board, "NEOPIXEL", None), use_wifi=False, debug=False)
+    display = mp.display
+
+    try:
+        if getattr(mp, "status_neopixel", None):
+            mp.status_neopixel.brightness = 0
+            mp.status_neopixel.fill(0)
+    except Exception:
+        pass
 
 display.brightness = clamp_brightness(BOOT_BRIGHTNESS)
 W, H = display.width, display.height
@@ -149,17 +158,39 @@ wifi = None
 
 def net_init():
     global requests, esp, wifi
+    # requests/esp/wifi can be set to False if init failed; don't retry in a tight loop.
     if requests is not None:
         return
+
+    try:
+        import busio
+        from digitalio import DigitalInOut
+        from adafruit_esp32spi import adafruit_esp32spi as _esp32spi
+        from adafruit_esp32spi.adafruit_esp32spi_wifimanager import WiFiManager as _WiFiManager
+        import adafruit_connection_manager as _acm
+        import adafruit_requests as _areq
+    except Exception:
+        # If libraries are missing or incompatible, avoid crashing; scoreboard will run without Wi-Fi.
+        esp = False
+        wifi = False
+        requests = False
+        return
+
     esp32_cs = DigitalInOut(board.ESP_CS)
     esp32_ready = DigitalInOut(board.ESP_BUSY)
     esp32_reset = DigitalInOut(board.ESP_RESET)
-    spi = busio.SPI(getattr(board, "SCK1", board.SCK), getattr(board, "MOSI1", board.MOSI), getattr(board, "MISO1", board.MISO))
-    esp = adafruit_esp32spi.ESP_SPIcontrol(spi, esp32_cs, esp32_ready, esp32_reset)
-    wifi = WiFiManager(esp, WIFI_SSID or "", WIFI_PASSWORD or "")
-    pool = adafruit_connection_manager.get_radio_socketpool(esp)
-    ssl = adafruit_connection_manager.get_radio_ssl_context(esp)
-    requests = adafruit_requests.Session(pool, ssl)
+
+    # Prefer ESP-specific SPI pins when present (MatrixPortal), otherwise fall back.
+    sck = getattr(board, "ESP_SCK", getattr(board, "SCK1", board.SCK))
+    mosi = getattr(board, "ESP_MOSI", getattr(board, "MOSI1", board.MOSI))
+    miso = getattr(board, "ESP_MISO", getattr(board, "MISO1", board.MISO))
+    spi = busio.SPI(sck, mosi, miso)
+
+    esp = _esp32spi.ESP_SPIcontrol(spi, esp32_cs, esp32_ready, esp32_reset)
+    wifi = _WiFiManager(esp, WIFI_SSID or "", WIFI_PASSWORD or "")
+    pool = _acm.get_radio_socketpool(esp)
+    ssl = _acm.get_radio_ssl_context(esp)
+    requests = _areq.Session(pool, ssl)
 
 
 def net_connect():
@@ -189,6 +220,90 @@ def get_json(path, timeout=4):
         return None
 
 
+_MONTHS = {
+    "JAN": 1,
+    "FEB": 2,
+    "MAR": 3,
+    "APR": 4,
+    "MAY": 5,
+    "JUN": 6,
+    "JUL": 7,
+    "AUG": 8,
+    "SEP": 9,
+    "OCT": 10,
+    "NOV": 11,
+    "DEC": 12,
+}
+
+
+def _header_get(headers_obj, key):
+    if not headers_obj:
+        return None
+    try:
+        v = headers_obj.get(key)
+        if v:
+            return v
+    except Exception:
+        pass
+    k2 = str(key or "").lower()
+    try:
+        for k in headers_obj:
+            if str(k).lower() == k2:
+                return headers_obj[k]
+    except Exception:
+        pass
+    return None
+
+
+def parse_http_date(date_value):
+    # Example: "Mon, 23 Feb 2026 02:41:32 GMT"
+    s = str(date_value or "").strip()
+    if not s:
+        return None
+    try:
+        if "," in s:
+            s = s.split(",", 1)[1].strip()
+        parts = s.split()
+        # day month year hh:mm:ss tz
+        if len(parts) < 5:
+            return None
+        day = int(parts[0])
+        mon = _MONTHS.get(parts[1].strip().upper())
+        year = int(parts[2])
+        hms = parts[3].split(":")
+        hh = int(hms[0])
+        mm = int(hms[1])
+        ss = int(hms[2])
+        if not mon:
+            return None
+        # struct_time: (year, month, mday, hour, minute, second, wday, yday, isdst)
+        return time.struct_time((year, mon, day, hh, mm, ss, -1, -1, -1))
+    except Exception:
+        return None
+
+
+def sync_rtc_from_worker(timeout=4):
+    # Returns True if RTC was set.
+    if not (CONTROL_BASE_URL and requests and esp and getattr(esp, "is_connected", False)):
+        return False
+    try:
+        r = requests.get(CONTROL_BASE_URL + TIME_SYNC_PATH, headers={"Accept": "application/json"}, timeout=timeout)
+        try:
+            date_hdr = _header_get(getattr(r, "headers", None), "Date")
+            st = parse_http_date(date_hdr)
+            if not st:
+                return False
+            rtc.RTC().datetime = st
+            return True
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+    except Exception:
+        return False
+
+
 # ---- Main loop ----
 control = {"mode": "auto", "tz": CLOCK_TZ, "brightness": DISPLAY_BRIGHTNESS}
 score = {}
@@ -196,9 +311,25 @@ score = {}
 last_control = -999
 last_score = -999
 last_wifi = -999
+last_time_sync = -999
 
 last_time_text = ""
 last_score_text = ""
+
+
+def format_countdown_dhm(total_seconds):
+    try:
+        s = int(total_seconds)
+    except Exception:
+        return ""
+    if s < 0:
+        s = 0
+    days = s // 86400
+    hours = (s % 86400) // 3600
+    mins = (s % 3600) // 60
+    if days > 0:
+        return f"{days}d {hours:02d}:{mins:02d}"
+    return f"{hours}:{mins:02d}"
 
 while True:
     mono = time.monotonic()
@@ -221,6 +352,15 @@ while True:
             net_connect()
 
     connected = (esp is not None) and getattr(esp, "is_connected", False)
+
+    # If RTC isn't set yet (or periodically), sync from Worker Date header.
+    try:
+        rtc_is_set = int(time.time()) > 1700000000
+    except Exception:
+        rtc_is_set = False
+    if connected and ((not rtc_is_set) or (mono - last_time_sync) >= TIME_SYNC_INTERVAL_SECONDS):
+        if sync_rtc_from_worker(timeout=4):
+            last_time_sync = mono
 
     # brightness: very low cap + slow ramp
     want_b = clamp_brightness(control.get("brightness", DISPLAY_BRIGHTNESS))
@@ -255,6 +395,7 @@ while True:
     # local time
     utc_epoch = int(time.time())
     if utc_epoch < 1700000000:
+        # RTC isn't set and network sync failed; fall back to a deterministic placeholder.
         utc_epoch = 1735689600 + int(mono)
     tz = str(control.get("tz") or CLOCK_TZ).strip().lower() or CLOCK_TZ
     now = time.localtime(utc_epoch + tz_offset_seconds(tz))
@@ -273,12 +414,16 @@ while True:
         time_lbl.hidden = False
         score_lbl.hidden = True
     else:
-        a = score.get("team_score")
-        b = score.get("opp_score")
-        if a is None or b is None or bool(score.get("view_unavailable")):
-            s = "NOT ON"
+        # Timer view support: Worker sends countdown_* fields with null scores.
+        if bool(score.get("countdown_active")) and score.get("countdown_seconds") is not None:
+            s = format_countdown_dhm(score.get("countdown_seconds")) or "--:--"
         else:
-            s = f"{int(a)}-{int(b)}"
+            a = score.get("team_score")
+            b = score.get("opp_score")
+            if a is None or b is None or bool(score.get("view_unavailable")):
+                s = "NOT ON"
+            else:
+                s = f"{int(a)}-{int(b)}"
         if s != last_score_text:
             _center(score_lbl, s, H // 2)
             last_score_text = s
