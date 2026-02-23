@@ -5,8 +5,11 @@ const DEFAULT_CONTROL = {
   view: "score", // score|timer
   mode: "auto",
   tz: "ct", // utc|et|ct|mt|pt
-  brightness: 0.22,
+  brightness: 0.08,
 };
+
+// Safety cap to reduce brownout risk on the MatrixPortal + HUB75 panel.
+const MAX_BRIGHTNESS = 0.12;
 
 const NCAA_SOURCE_KEYS = ["ncaa-softball", "ncaa_softball", "ncaa"];
 const NCAA_BASKETBALL_SOURCE_KEYS = ["ncaa-basketball", "ncaa_basketball", "cbb"];
@@ -51,6 +54,10 @@ const CORS_HEADERS = {
 };
 
 const WORKER_VERSION = "2026.02.22-ui11";
+
+// Public NCAA API (henrygd/ncaa-api). This mirrors ncaa.com paths.
+// Docs: https://ncaa-api.henrygd.me/openapi
+const NCAA_API_BASE = "https://ncaa-api.henrygd.me";
 
 export default {
   async fetch(request, env) {
@@ -393,7 +400,7 @@ function renderControlUiHtml(url) {
           <div id="liveTeamWrap">
             <label for="teamLive">Team (Live)</label>
             <select id="teamLive"></select>
-            <div class="muted" style="margin-top:8px;">Only shows teams actively playing right now (from ESPN).</div>
+            <div class="muted" style="margin-top:8px;">Teams are loaded from the selected source (ESPN for Pro, NCAA API for NCAA sports).</div>
 
             <div class="row" style="margin-top:10px; align-items:center;">
               <div class="pill" style="justify-content:space-between;">
@@ -521,8 +528,8 @@ function renderControlUiHtml(url) {
 
         <label for="brightness">Brightness</label>
         <div class="row">
-          <input id="brightness" type="range" min="0.05" max="1" step="0.01" value="0.22" />
-          <input id="brightnessNum" type="number" min="0.05" max="1" step="0.01" value="0.22" />
+          <input id="brightness" type="range" min="0.02" max="0.12" step="0.01" value="0.08" />
+          <input id="brightnessNum" type="number" min="0.02" max="0.12" step="0.01" value="0.08" />
         </div>
         <div class="muted" style="margin-top:8px;">Saves to the device control state so the MatrixPortal remembers it.</div>
 
@@ -556,7 +563,7 @@ function renderControlUiHtml(url) {
         device: cookieGet("ui_device") || "${deviceId}",
         token: cookieGet("ui_token") || "",
         tz: cookieGet("ui_tz") || "ct",
-        brightness: parseFloat(cookieGet("ui_brightness") || "") || 0.22,
+        brightness: parseFloat(cookieGet("ui_brightness") || "") || 0.08,
       };
 
       const teamLists = {
@@ -862,15 +869,20 @@ function renderControlUiHtml(url) {
 
       async function loadLiveTeams() {
         try {
-          if (state.source !== "pro" || state.display === "clock") {
-            $("teamLive").innerHTML = '<option value="">(No live teams)</option>';
+          if (state.display === "clock") {
+            $("teamLive").innerHTML = '<option value="">(No teams)</option>';
             $("teamLive").value = "";
             return;
           }
 
           const sport = $("sport").value.trim() || "nfl";
           const tz = $("tz").value || "ct";
-          const resp = await getJson("/teams?sport=" + encodeURIComponent(sport) + "&source=pro&tz=" + encodeURIComponent(tz));
+          const source = $("source").value.trim() || (sportToSource[sport] || "pro");
+          const resp = await getJson(
+            "/teams?sport=" + encodeURIComponent(sport) +
+            "&source=" + encodeURIComponent(source) +
+            "&tz=" + encodeURIComponent(tz)
+          );
           const teams = (resp?.status === 200 && resp?.json && Array.isArray(resp.json.teams)) ? resp.json.teams : [];
 
           const sel = $("teamLive");
@@ -879,7 +891,7 @@ function renderControlUiHtml(url) {
           if (!teams.length) {
             const opt = document.createElement("option");
             opt.value = "";
-            opt.textContent = "(No live teams)";
+            opt.textContent = "(No teams)";
             sel.appendChild(opt);
             sel.value = "";
             return;
@@ -934,7 +946,7 @@ function renderControlUiHtml(url) {
         const tz = $("tz").value || "ct";
 
         const brightnessRaw = parseFloat(String(state.brightness || "").trim());
-        const brightness = Number.isFinite(brightnessRaw) ? Math.min(1, Math.max(0.05, brightnessRaw)) : 0.22;
+        const brightness = Number.isFinite(brightnessRaw) ? Math.min(MAX_BRIGHTNESS, Math.max(0.02, brightnessRaw)) : 0.08;
 
         const clock = (opts && opts.forceClock) || state.display === "clock";
         const mode = clock ? "idle" : "auto";
@@ -1075,7 +1087,7 @@ function renderControlUiHtml(url) {
         cookieSet("ui_tz", tz);
 
         if (Number.isFinite(brightness)) {
-          const b = Math.min(1, Math.max(0.05, brightness));
+          const b = Math.min(MAX_BRIGHTNESS, Math.max(0.02, brightness));
           state.brightness = b;
           cookieSet("ui_brightness", String(b));
           if ($("brightness")) $("brightness").value = String(b);
@@ -1350,7 +1362,7 @@ function renderControlUiHtml(url) {
       function setBrightness(v) {
         const n = parseFloat(String(v || "").trim());
         if (!Number.isFinite(n)) return;
-        const b = Math.min(1, Math.max(0.05, n));
+        const b = Math.min(MAX_BRIGHTNESS, Math.max(0.02, n));
         state.brightness = b;
         cookieSet("ui_brightness", String(b));
         $("brightness").value = String(b);
@@ -1491,7 +1503,49 @@ async function handleGetTeams(searchParams, env) {
   const tz = (searchParams.get("tz") || "ct").toString().trim().toLowerCase();
   const debug = String(searchParams.get("debug") || "").trim() === "1";
 
-  // Only implemented for ESPN-backed "pro" sports right now.
+  // NCAA basketball (March Madness): return bracket teams (not just live teams).
+  if (source === "ncaa-basketball" || NCAA_BASKETBALL_SOURCE_KEYS.includes(source) || sport === "cbb") {
+    const year = inferMarchMadnessYear();
+    const tryYears = [year, year - 1].filter((y, i, a) => Number.isFinite(y) && a.indexOf(y) === i);
+    for (const y of tryYears) {
+      const upstreamUrl = `${NCAA_API_BASE}/brackets/basketball-men/d1/${encodeURIComponent(String(y))}`;
+      try {
+        const resp = await fetch(upstreamUrl, {
+          headers: { Accept: "application/json" },
+          cf: { cacheTtl: 60, cacheEverything: false },
+        });
+        if (!resp.ok) continue;
+        const data = await resp.json().catch(() => null);
+        const teams = extractNcaaBracketTeams(data);
+        if (!teams.length) continue;
+        const out = { sport: "cbb", source: "ncaa-basketball", teams, updated_at: Math.floor(Date.now() / 1000) };
+        if (debug) {
+          out._debug = { upstream_url: upstreamUrl, team_count: teams.length, preview: truncateJsonPreview(data, 20000) };
+          try { console.log("/teams ncaa-basketball debug", JSON.stringify(out._debug)); } catch {}
+        }
+        return jsonResponse(out);
+      } catch {
+        // try next year fallback
+      }
+    }
+    return jsonResponse({ sport: "cbb", source: "ncaa-basketball", teams: [], updated_at: Math.floor(Date.now() / 1000) });
+  }
+
+  // NCAA softball: NEWMAC conference schools (D3). We derive slugs from /schools-index.
+  if (source === "ncaa-softball" || NCAA_SOURCE_KEYS.includes(source) || sport === "softball") {
+    try {
+      const teams = await fetchNewmacSoftballTeams();
+      const out = { sport: "softball", source: "ncaa-softball", teams, updated_at: Math.floor(Date.now() / 1000) };
+      if (debug) {
+        out._debug = { note: "Teams derived from /schools-index; scoring uses /scoreboard/softball/d3", team_count: teams.length };
+      }
+      return jsonResponse(out);
+    } catch {
+      return jsonResponse({ sport: "softball", source: "ncaa-softball", teams: [], updated_at: Math.floor(Date.now() / 1000) });
+    }
+  }
+
+  // ESPN-backed "pro" sports: live teams only.
   if (source !== "pro") {
     return jsonResponse({ sport, source, teams: [], updated_at: Math.floor(Date.now() / 1000) });
   }
@@ -1532,6 +1586,104 @@ async function handleGetTeams(searchParams, env) {
   } catch {
     return jsonResponse({ sport, source, teams: [], updated_at: Math.floor(Date.now() / 1000) });
   }
+}
+
+function inferMarchMadnessYear() {
+  // Tournament is March/April of the calendar year; use the current year.
+  return new Date().getUTCFullYear();
+}
+
+function extractNcaaBracketTeams(data) {
+  const teams = [];
+  const seen = new Set();
+  const champs = Array.isArray(data?.championships) ? data.championships : [];
+  for (const ch of champs) {
+    const games = Array.isArray(ch?.games) ? ch.games : [];
+    for (const g of games) {
+      const gTeams = Array.isArray(g?.teams) ? g.teams : [];
+      for (const t of gTeams) {
+        const slug = String(t?.seoname || "").trim();
+        const name = String(t?.nameShort || t?.nameFull || "").trim();
+        if (!slug || !name) continue;
+        const key = slug.toUpperCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        teams.push({ abbr: key, name });
+      }
+    }
+  }
+  teams.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  return teams;
+}
+
+async function fetchNewmacSoftballTeams() {
+  // NEWMAC (New England Women's and Men's Athletic Conference) D3 schools.
+  // We store the display names here, and resolve the NCAA slug via /schools-index.
+  const newmacNames = [
+    "Babson",
+    "Clark",
+    "Coast Guard",
+    "Emerson",
+    "MIT",
+    "Mount Holyoke",
+    "Salve Regina",
+    "Smith",
+    "Springfield",
+    "Wellesley",
+    "Wheaton (MA)",
+    "WPI",
+  ];
+
+  // Fallback slugs used by ncaa.com for many schools (best-effort).
+  // These are only used when /schools-index matching doesn't find a slug.
+  const fallbackSlugByName = {
+    "Babson": "babson",
+    "Clark": "clark",
+    "Coast Guard": "coast-guard",
+    "Emerson": "emerson",
+    "MIT": "mit",
+    "Mount Holyoke": "mount-holyoke",
+    "Salve Regina": "salve-regina",
+    "Smith": "smith",
+    "Springfield": "springfield",
+    "Wellesley": "wellesley",
+    "Wheaton (MA)": "wheaton-ma",
+    "WPI": "wpi",
+  };
+
+  const upstreamUrl = `${NCAA_API_BASE}/schools-index`;
+  const resp = await fetch(upstreamUrl, {
+    headers: { Accept: "application/json" },
+    cf: { cacheTtl: 86400, cacheEverything: false },
+  });
+  if (!resp.ok) return [];
+  const list = await resp.json().catch(() => null);
+  const rows = Array.isArray(list) ? list : (Array.isArray(list?.schools) ? list.schools : []);
+  if (!rows.length) return [];
+
+  const norm = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]+/g, "");
+  const byKey = new Map();
+  for (const s of rows) {
+    const slug = String(s?.slug || s?.seo || s?.team_seo || "").trim();
+    const short = String(s?.name || "").trim();
+    const long = String(s?.long_name || s?.longName || s?.long || "").trim();
+    if (!slug) continue;
+    if (short) byKey.set(norm(short), slug);
+    if (long) byKey.set(norm(long), slug);
+  }
+
+  const teams = [];
+  for (const name of newmacNames) {
+    const slug =
+      byKey.get(norm(name)) ||
+      byKey.get(norm(name.replace(/\s*\(.*\)\s*$/, ""))) ||
+      String(fallbackSlugByName[name] || "").trim();
+    if (!slug) continue;
+    teams.push({ abbr: slug.toUpperCase(), name: name });
+  }
+
+  teams.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  return teams;
 }
 
 function makeDevScorePayload(control) {
@@ -1755,8 +1907,8 @@ function normalizeControl(input, deviceId) {
 
   const rawBrightness = Number(input.brightness);
   const brightness = Number.isFinite(rawBrightness)
-    ? Math.min(1, Math.max(0.05, rawBrightness))
-    : (Number(DEFAULT_CONTROL.brightness) || 0.22);
+    ? Math.min(MAX_BRIGHTNESS, Math.max(0.02, rawBrightness))
+    : (Number(DEFAULT_CONTROL.brightness) || 0.08);
 
   return {
     device_id: deviceId,
@@ -2377,39 +2529,51 @@ function normalizeOlympicSport(input) {
 }
 
 async function fetchNcaaBasketballScore(control, env) {
-  const team = (control.team || "").toString().trim();
-  const baseUrl = env.NCAA_BASKETBALL_API_URL || env.SPORTS_API_URL;
+  const requested = (control.team || "").toString().trim().toUpperCase();
+  if (!requested) return makeNcaaBasketballMock("TEAM", "SCHEDULED");
 
-  if (!baseUrl) {
-    return makeNcaaBasketballMock(team, "SCHEDULED");
+  const year = inferMarchMadnessYear();
+  const tryYears = [year, year - 1].filter((y, i, a) => Number.isFinite(y) && a.indexOf(y) === i);
+
+  for (const y of tryYears) {
+    const upstreamUrl = `${NCAA_API_BASE}/brackets/basketball-men/d1/${encodeURIComponent(String(y))}`;
+    try {
+      const resp = await fetch(upstreamUrl, {
+        headers: { Accept: "application/json" },
+        cf: { cacheTtl: 30, cacheEverything: false },
+      });
+      if (!resp.ok) continue;
+
+      const data = await resp.json().catch(() => null);
+      const games = extractNcaaBracketGameCandidates(data);
+      const context = pickNcaaTeamGameContext(games, requested);
+      const game = context?.game;
+      if (!game) continue;
+
+      const normalized = normalizeHeadToHeadGame({
+        game,
+        requestedTeam: requested,
+        source: "ncaa-basketball",
+        sport: "cbb",
+        gameTime: game.start_time || game.game_time || null,
+      });
+
+      if (context.kind === "next") {
+        normalized.status = "SCHEDULED";
+        normalized.team_score = null;
+        normalized.opp_score = null;
+      }
+
+      const withTimer = withCountdownFromGame(normalized, game, context.kind === "next");
+      const out = withTeamMeta(withTimer, game);
+      out.tournament = "NCAA March Madness";
+      return out;
+    } catch {
+      // try previous year
+    }
   }
 
-  const upstreamUrl = buildNcaaBasketballUrl(baseUrl);
-
-  try {
-    const resp = await fetch(upstreamUrl, {
-      headers: {
-        Accept: "application/json",
-      },
-      cf: { cacheTtl: 20, cacheEverything: false },
-    });
-
-    if (!resp.ok) {
-      return makeNcaaBasketballMock(team, "SCHEDULED");
-    }
-
-    const data = await resp.json().catch(() => null);
-    if (!data) {
-      return makeNcaaBasketballMock(team, "SCHEDULED");
-    }
-
-    const adapted = adaptUpstreamPayload(data, { sport: "cbb", source: "ncaa-basketball" });
-
-    const normalized = normalizeNcaaBasketballUpstream(adapted, team);
-    return normalized || makeNcaaBasketballMock(team, "SCHEDULED");
-  } catch {
-    return makeNcaaBasketballMock(team, "SCHEDULED");
-  }
+  return makeNcaaBasketballMock(requested, "SCHEDULED");
 }
 
 function normalizeNcaaBasketballUpstream(data, requestedTeam) {
@@ -2451,39 +2615,148 @@ function makeNcaaBasketballMock(team, status = "SCHEDULED") {
 }
 
 async function fetchNcaaSoftballScore(control, env) {
-  const team = (control.team || "").toString().trim();
-  const baseUrl = env.NCAA_SOFTBALL_API_URL;
+  const requested = (control.team || "").toString().trim().toUpperCase();
+  if (!requested) return makeNcaaSoftballMock("TEAM", "SCHEDULED");
 
-  if (!baseUrl) {
-    return makeNcaaSoftballMock(team, "SCHEDULED");
-  }
-
-  const upstreamUrl = buildNcaaSoftballUrl(baseUrl);
+  // Use NCAA scoreboard for D3 softball. Omitting date returns today or the previous game date.
+  const upstreamUrl = `${NCAA_API_BASE}/scoreboard/softball/d3`;
 
   try {
     const resp = await fetch(upstreamUrl, {
-      headers: {
-        Accept: "application/json",
-      },
+      headers: { Accept: "application/json" },
       cf: { cacheTtl: 20, cacheEverything: false },
     });
 
     if (!resp.ok) {
-      return makeNcaaSoftballMock(team, "SCHEDULED");
+      return makeNcaaSoftballMock(requested, "SCHEDULED");
     }
 
     const data = await resp.json().catch(() => null);
-    if (!data) {
-      return makeNcaaSoftballMock(team, "SCHEDULED");
+    const games = extractNcaaScoreboardGameCandidates(data);
+    const context = pickNcaaTeamGameContext(games, requested);
+    const game = context?.game;
+    if (!game) {
+      return makeNcaaSoftballMock(requested, "SCHEDULED");
     }
 
-    const adapted = adaptUpstreamPayload(data, { sport: "softball", source: "ncaa-softball" });
+    const normalized = normalizeHeadToHeadGame({
+      game,
+      requestedTeam: requested,
+      source: "ncaa-softball",
+      sport: "softball",
+      gameTime: game.start_time || game.game_time || null,
+    });
 
-    const normalized = normalizeNcaaSoftballUpstream(adapted, team);
-    return normalized || makeNcaaSoftballMock(team, "SCHEDULED");
+    if (context.kind === "next") {
+      normalized.status = "SCHEDULED";
+      normalized.team_score = null;
+      normalized.opp_score = null;
+    }
+
+    const withTimer = withCountdownFromGame(normalized, game, context.kind === "next");
+    return withTeamMeta(withTimer, game);
   } catch {
-    return makeNcaaSoftballMock(team, "SCHEDULED");
+    return makeNcaaSoftballMock(requested, "SCHEDULED");
   }
+}
+
+function extractNcaaBracketGameCandidates(data) {
+  const games = [];
+  const champs = Array.isArray(data?.championships) ? data.championships : [];
+  for (const ch of champs) {
+    const list = Array.isArray(ch?.games) ? ch.games : [];
+    for (const g of list) {
+      const teams = Array.isArray(g?.teams) ? g.teams : [];
+      const home = teams.find((t) => t?.isHome) || teams[0] || null;
+      const away = teams.find((t) => !t?.isHome) || teams[1] || null;
+      if (!home || !away) continue;
+
+      const homeSeo = String(home?.seoname || "").trim();
+      const awaySeo = String(away?.seoname || "").trim();
+      if (!homeSeo || !awaySeo) continue;
+
+      games.push({
+        home_team: homeSeo.toUpperCase(),
+        away_team: awaySeo.toUpperCase(),
+        home_score: home?.score ?? null,
+        away_score: away?.score ?? null,
+        status: normalizeNcaaGameStatus(g?.gameState || g?.statusCodeDisplay || g?.currentPeriod || g?.finalMessage || ""),
+        start_time: g?.startTimeEpoch ?? null,
+        // Lightweight extras used by existing helpers.
+        current_period: g?.currentPeriod || "",
+        contest_clock: g?.contestClock || "",
+        event_name: ch?.title || "NCAA Tournament",
+      });
+    }
+  }
+  return games;
+}
+
+function extractNcaaScoreboardGameCandidates(data) {
+  const out = [];
+  const games = Array.isArray(data?.games) ? data.games : [];
+  for (const wrapper of games) {
+    const g = wrapper?.game || wrapper;
+    if (!g) continue;
+
+    const home = g?.home || {};
+    const away = g?.away || {};
+    const homeSeo = String(home?.names?.seo || "").trim();
+    const awaySeo = String(away?.names?.seo || "").trim();
+    if (!homeSeo || !awaySeo) continue;
+
+    out.push({
+      home_team: homeSeo.toUpperCase(),
+      away_team: awaySeo.toUpperCase(),
+      home_score: home?.score ?? null,
+      away_score: away?.score ?? null,
+      status: normalizeNcaaGameStatus(g?.gameState || g?.currentPeriod || g?.finalMessage || ""),
+      start_time: g?.startTimeEpoch ?? null,
+      game_time: g?.startTimeEpoch ?? null,
+      current_period: g?.currentPeriod || "",
+      contest_clock: g?.contestClock || "",
+      event_name: g?.title || "",
+    });
+  }
+  return out;
+}
+
+function normalizeNcaaGameStatus(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  // ncaa-api scoreboards often use values like "final"/"live" and brackets use "F".
+  if (!raw) return "SCHEDULED";
+  if (raw === "F" || raw.includes("FINAL")) return "FINAL";
+  if (raw === "L" || raw.includes("LIVE") || raw.includes("IN PROGRESS") || raw.includes("IN-PROGRESS")) return "LIVE";
+  if (raw.includes("SCHEDULE") || raw.includes("PRE") || raw.includes("TBD")) return "SCHEDULED";
+  return normalizeStatus(raw);
+}
+
+function pickNcaaTeamGameContext(candidates, requestedTeam) {
+  const req = String(requestedTeam || "").trim().toUpperCase();
+  const pool = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
+  if (!pool.length) return { game: null, kind: "none" };
+
+  const scoped = req ? pool.filter((g) => {
+    const home = String(g?.home_team || g?.home || "").trim().toUpperCase();
+    const away = String(g?.away_team || g?.away || "").trim().toUpperCase();
+    return home === req || away === req;
+  }) : pool;
+  const use = scoped.length ? scoped : pool;
+
+  const live = use.find((g) => normalizeStatus(g.status || "") === "LIVE");
+  if (live) return { game: live, kind: "live" };
+
+  const now = Date.now();
+  const upcoming = use
+    .map((g) => ({ game: g, ms: getGameStartMs(g) }))
+    .filter((x) => x.ms !== null && x.ms >= now)
+    .sort((a, b) => a.ms - b.ms);
+  if (upcoming.length) return { game: upcoming[0].game, kind: "next" };
+
+  const lastFinal = pickLatestFinalGame(use);
+  if (lastFinal) return { game: lastFinal, kind: "last-final" };
+
+  return { game: use[0], kind: "fallback" };
 }
 
 function buildSoccerHeaders(env) {
