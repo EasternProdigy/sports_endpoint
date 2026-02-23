@@ -2,6 +2,7 @@ const DEFAULT_CONTROL = {
   source: "wellesley",
   sport: "nfl",
   team: "DAL",
+  game_id: "",
   view: "score", // score|timer
   mode: "auto",
   tz: "ct", // utc|et|ct|mt|pt
@@ -53,7 +54,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.22-ui11";
+const WORKER_VERSION = "2026.02.23-ui12";
 
 // Public NCAA API (henrygd/ncaa-api). This mirrors ncaa.com paths.
 // Docs: https://ncaa-api.henrygd.me/openapi
@@ -96,6 +97,10 @@ export default {
 
       if (pathname === "/teams" && request.method === "GET") {
         return await handleGetTeams(searchParams, env);
+      }
+
+      if (pathname === "/games" && request.method === "GET") {
+        return await handleGetGames(searchParams, env);
       }
 
       if (pathname === "/score" && request.method === "GET") {
@@ -403,9 +408,17 @@ function renderControlUiHtml(url) {
           </select>
 
           <div id="liveTeamWrap">
-            <label for="teamLive">Team</label>
-            <select id="teamLive"></select>
-            <div class="muted" style="margin-top:8px;">Teams are loaded from the selected source (ESPN for Pro, NCAA API for NCAA sports).</div>
+            <div id="liveGameWrap" class="advHidden">
+              <label for="gameLive">Game</label>
+              <select id="gameLive"></select>
+              <div class="muted" style="margin-top:8px;">Games are loaded from ESPN for the selected Pro sport (live games only).</div>
+            </div>
+
+            <div id="liveTeamPickerWrap">
+              <label for="teamLive">Team</label>
+              <select id="teamLive"></select>
+              <div class="muted" style="margin-top:8px;">Teams are loaded from the selected source (ESPN for Pro, NCAA API for NCAA sports).</div>
+            </div>
 
             <div class="row" style="margin-top:10px; align-items:center;">
               <div class="pill" style="justify-content:space-between;">
@@ -517,7 +530,7 @@ function renderControlUiHtml(url) {
 
         <p><strong>Nitty gritty</strong></p>
         <ul>
-          <li>This page sends a <code>POST /control</code> with: <code>{ device_id, source, sport, team, view, mode, tz, brightness }</code>.</li>
+          <li>This page sends a <code>POST /control</code> with: <code>{ device_id, source, sport, team, game_id, view, mode, tz, brightness }</code>.</li>
           <li>Your MatrixPortal polls <code>/control</code> and <code>/score</code> every few seconds and updates the display.</li>
           <li><code>mode: "idle"</code> forces clock-only mode on the board.</li>
         </ul>
@@ -598,7 +611,9 @@ function renderControlUiHtml(url) {
         view: cookieGet("ui_view") || "score", // score|timer
         team: "", // timer/team-search display string
         liveTeam: cookieGet("ui_live_team") || "", // team code
+        liveGame: "", // pro event id (restored per-sport in loadLiveGames)
         lastTeams: [], // last /teams response for current sport+source
+        lastGames: [], // last /games response for current sport+source
         sourceOverride: cookieGet("ui_src_override") === "1",
         source: cookieGet("ui_source") || "pro",
         device: cookieGet("ui_device") || "${deviceId}",
@@ -895,6 +910,20 @@ function renderControlUiHtml(url) {
         // (User must choose a Timer Team.)
         $("sport").disabled = timerOn;
         $("teamLive").disabled = timerOn;
+        $("gameLive").disabled = timerOn;
+
+        applyScorePickerMode();
+      }
+
+      function isProGameMode() {
+        // Score view for pro sports uses games instead of teams.
+        return state.display !== "clock" && state.view === "score" && effectiveSource() === "pro";
+      }
+
+      function applyScorePickerMode() {
+        const gameMode = isProGameMode();
+        $("liveGameWrap").classList.toggle("advHidden", !gameMode);
+        $("liveTeamPickerWrap").classList.toggle("advHidden", gameMode);
       }
 
       function effectiveSource() {
@@ -921,6 +950,7 @@ function renderControlUiHtml(url) {
           // Non-pro sources don't support timer; ensure sport/team aren't locked.
           $("sport").disabled = false;
           $("teamLive").disabled = false;
+          $("gameLive").disabled = false;
         }
       }
 
@@ -1017,6 +1047,77 @@ function renderControlUiHtml(url) {
         }
       }
 
+      async function loadLiveGames() {
+        try {
+          if (state.display === "clock") {
+            $("gameLive").innerHTML = '<option value="">(No games)</option>';
+            $("gameLive").value = "";
+            return;
+          }
+
+          const sport = $("sport").value.trim() || "nfl";
+          const tz = $("tz").value || "ct";
+          const source = $("source").value.trim() || (sportToSource[sport] || "pro");
+
+          // Only pro supports game listing.
+          if (String(source).trim().toLowerCase() !== "pro") {
+            $("gameLive").innerHTML = '<option value="">(No games)</option>';
+            $("gameLive").value = "";
+            state.lastGames = [];
+            return;
+          }
+
+          uiLog("loadLiveGames", { sport, source, tz });
+          const resp = await getJson(
+            "/games?sport=" + encodeURIComponent(sport) +
+            "&source=" + encodeURIComponent(source) +
+            "&tz=" + encodeURIComponent(tz)
+          );
+          uiLog("/games result", { status: resp?.status, keys: resp?.json ? Object.keys(resp.json) : undefined });
+          const games = (resp?.status === 200 && resp?.json && Array.isArray(resp.json.games)) ? resp.json.games : [];
+          state.lastGames = games;
+
+          const sel = $("gameLive");
+          sel.innerHTML = "";
+
+          if (!games.length) {
+            const opt = document.createElement("option");
+            opt.value = "";
+            opt.textContent = "(No live games)";
+            sel.appendChild(opt);
+            sel.value = "";
+            state.liveGame = "";
+            return;
+          }
+
+          for (const g of games) {
+            const id = String(g?.id || "").trim();
+            if (!id) continue;
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.textContent = String(g?.label || id);
+            opt.dataset.home = String(g?.home_abbr || "").trim().toUpperCase();
+            opt.dataset.away = String(g?.away_abbr || "").trim().toUpperCase();
+            sel.appendChild(opt);
+          }
+
+          const sportKey = sport.toLowerCase();
+          const remembered = cookieGet("ui_live_game_" + sportKey);
+          if (remembered && Array.from(sel.options).some((o) => o.value === remembered)) {
+            sel.value = remembered;
+            state.liveGame = remembered;
+          } else {
+            sel.value = sel.options[0]?.value || "";
+            state.liveGame = sel.value;
+          }
+        } catch {
+          try {
+            $("gameLive").innerHTML = '<option value="">(No live games)</option>';
+            $("gameLive").value = "";
+          } catch {}
+        }
+      }
+
       inferSource();
       applyTheme();
       applyTabs();
@@ -1024,16 +1125,32 @@ function renderControlUiHtml(url) {
       setView(state.view);
       buildTimerTeamOptions();
       applyTimerAvailability();
+      applyScorePickerMode();
 
       function buildControlPayload(opts) {
         const device_id = $("device").value.trim() || "matrix-01";
         const sport = $("sport").value.trim();
         const view = state.view;
         let team = "";
+        let game_id = "";
         if (view === "timer") {
           team = String($("timerTeam").value || "").trim().toUpperCase();
         } else {
-          team = String($("teamLive").value || "").trim().toUpperCase();
+          if (effectiveSource() === "pro") {
+            game_id = String($("gameLive").value || "").trim();
+            // Set team to home abbr as a stable fallback in case game_id is missing.
+            const opt = $("gameLive").selectedOptions && $("gameLive").selectedOptions[0];
+            const home = opt ? String(opt.dataset.home || "").trim().toUpperCase() : "";
+            if (home) {
+              team = home;
+            } else {
+              const sportKey = String(sport || "").trim().toLowerCase();
+              const remembered = cookieGet("ui_live_team_" + sportKey);
+              team = String(remembered || $("teamLive").value || "").trim().toUpperCase();
+            }
+          } else {
+            team = String($("teamLive").value || "").trim().toUpperCase();
+          }
         }
         const source = $("source").value.trim() || (sportToSource[sport] || "pro");
 
@@ -1044,7 +1161,7 @@ function renderControlUiHtml(url) {
 
         const clock = (opts && opts.forceClock) || state.display === "clock";
         const mode = clock ? "idle" : "auto";
-        return { device_id, source, sport, team, view, mode, tz, brightness };
+        return { device_id, source, sport, team, game_id, view, mode, tz, brightness };
       }
 
       async function postControl(payload) {
@@ -1054,6 +1171,7 @@ function renderControlUiHtml(url) {
           sport: payload?.sport,
           source: payload?.source,
           team: payload?.team,
+          game_id: payload?.game_id,
           view: payload?.view,
           mode: payload?.mode,
           tz: payload?.tz,
@@ -1069,7 +1187,11 @@ function renderControlUiHtml(url) {
           cookieSet("ui_timer_team_" + s, String($("timerTeam").value || ""));
         } else {
           const s = $("sport").value.trim().toLowerCase();
-          cookieSet("ui_live_team_" + s, String($("teamLive").value || ""));
+          if (effectiveSource() === "pro") {
+            cookieSet("ui_live_game_" + s, String($("gameLive").value || ""));
+          } else {
+            cookieSet("ui_live_team_" + s, String($("teamLive").value || ""));
+          }
         }
         cookieSet("ui_source", $("source").value.trim());
         cookieSet("ui_tz", $("tz").value);
@@ -1176,6 +1298,7 @@ function renderControlUiHtml(url) {
           sport: control?.sport,
           source: control?.source,
           team: control?.team,
+          game_id: control?.game_id,
           view: control?.view,
           mode: control?.mode,
           tz: control?.tz,
@@ -1186,6 +1309,7 @@ function renderControlUiHtml(url) {
         const sport = String(control.sport || "").trim() || "nfl";
         const source = String(control.source || "").trim() || (sportToSource[sport] || "pro");
         const team = String(control.team || "").trim();
+        const game_id = String(control.game_id || "").trim();
         const view = String(control.view || "score").trim().toLowerCase();
         const mode = String(control.mode || "auto").trim().toLowerCase();
         const tz = String(control.tz || "ct").trim().toLowerCase() || "ct";
@@ -1225,22 +1349,37 @@ function renderControlUiHtml(url) {
         $("tz").value = tz;
         applyDisplayMode();
         applyTimerAvailability();
+        applyScorePickerMode();
 
         const teamDisplay = teamDisplayFromControl(sport, team);
         state.team = teamDisplay;
         $("team").value = teamDisplay;
         cookieSet(teamCookieKey(sport), teamDisplay);
 
-        // Live team picker prefers storing a team code.
+        // Persist last selections.
         try {
           const sportKey = String(sport || "").trim().toLowerCase();
-          if (team) cookieSet("ui_live_team_" + sportKey, String(team || ""));
-          if (team) cookieSet("ui_timer_team_" + sportKey, String(team || ""));
+          if (view === "timer") {
+            if (team) cookieSet("ui_timer_team_" + sportKey, String(team || ""));
+          } else {
+            if (String(source || "").trim().toLowerCase() === "pro" && game_id) {
+              cookieSet("ui_live_game_" + sportKey, String(game_id));
+            } else if (team) {
+              cookieSet("ui_live_team_" + sportKey, String(team || ""));
+            }
+          }
         } catch {}
 
         setCurrentSummary(control);
         refreshSendButtonLabel();
-        loadLiveTeams();
+        if (isProGameMode() && game_id) {
+          // Load games and let loadLiveGames restore selection from cookie.
+          loadLiveGames();
+        } else if (isProGameMode()) {
+          loadLiveGames();
+        } else {
+          loadLiveTeams();
+        }
         buildTimerTeamOptions();
       }
 
@@ -1261,7 +1400,8 @@ function renderControlUiHtml(url) {
             device_id: $("device").value.trim() || "matrix-01",
             sport: $("sport").value,
             source: $("source").value,
-            team: state.view === "timer" ? parseTeamAbbr($("team").value) : String($("teamLive").value || "").trim().toUpperCase(),
+            team: state.view === "timer" ? parseTeamAbbr($("team").value) : (effectiveSource() === "pro" ? String($("teamLive").value || "").trim().toUpperCase() : String($("teamLive").value || "").trim().toUpperCase()),
+            game_id: (state.view === "score" && effectiveSource() === "pro") ? String($("gameLive").value || "").trim() : "",
             view: state.view,
             mode: state.display === "clock" ? "idle" : "auto",
             tz: $("tz").value || "ct",
@@ -1395,7 +1535,9 @@ function renderControlUiHtml(url) {
         setView("score");
         buildTimerTeamOptions();
         applyTimerAvailability();
-        loadLiveTeams();
+        applyScorePickerMode();
+        if (isProGameMode()) loadLiveGames();
+        else loadLiveTeams();
       });
 
       $("team").addEventListener("change", () => {
@@ -1407,6 +1549,13 @@ function renderControlUiHtml(url) {
         const v = String($("teamLive").value || "").trim().toUpperCase();
         state.liveTeam = v;
         try { cookieSet("ui_live_team_" + String(state.sport || "").toLowerCase(), v); } catch {}
+        // leave timer switch as-is
+      });
+
+      $("gameLive").addEventListener("change", () => {
+        const v = String($("gameLive").value || "").trim();
+        state.liveGame = v;
+        try { cookieSet("ui_live_game_" + String(state.sport || "").toLowerCase(), v); } catch {}
         // leave timer switch as-is
       });
 
@@ -1457,7 +1606,8 @@ function renderControlUiHtml(url) {
       $("tz").addEventListener("change", () => {
         state.tz = $("tz").value;
         cookieSet("ui_tz", state.tz);
-        loadLiveTeams();
+        if (isProGameMode()) loadLiveGames();
+        else loadLiveTeams();
       });
 
       // Modal
@@ -1486,8 +1636,10 @@ function renderControlUiHtml(url) {
         if (e.target && e.target.id === "settingsModal") closeSettings();
       });
 
-      // Populate live teams on initial load.
-      loadLiveTeams();
+      // Populate the score selector on initial load.
+      applyScorePickerMode();
+      if (isProGameMode()) loadLiveGames();
+      else loadLiveTeams();
 
       function setBrightness(v) {
         const n = parseFloat(String(v || "").trim());
@@ -1532,7 +1684,9 @@ function renderControlUiHtml(url) {
         state.source = $("source").value;
         cookieSet("ui_source", state.source);
         applyTimerAvailability();
-        loadLiveTeams();
+        applyScorePickerMode();
+        if (isProGameMode()) loadLiveGames();
+        else loadLiveTeams();
       });
     </script>
   </body>
@@ -1742,6 +1896,75 @@ async function handleGetTeams(searchParams, env) {
     return jsonResponse(out);
   } catch {
     return jsonResponse({ sport, source, teams: [], updated_at: Math.floor(Date.now() / 1000) });
+  }
+}
+
+async function handleGetGames(searchParams, env) {
+  const sport = (searchParams.get("sport") || "nfl").toString().trim().toLowerCase();
+  const source = (searchParams.get("source") || "pro").toString().trim().toLowerCase();
+  const tz = (searchParams.get("tz") || "ct").toString().trim().toLowerCase();
+  const debug = String(searchParams.get("debug") || "").trim() === "1";
+
+  // Game listing is currently only supported for ESPN-backed pro sports.
+  if (source !== "pro") {
+    return jsonResponse({ sport, source, games: [], updated_at: Math.floor(Date.now() / 1000) });
+  }
+
+  const baseUrl = env.SPORTS_API_URL;
+  if (!baseUrl) {
+    return jsonResponse({ sport, source, games: [], updated_at: Math.floor(Date.now() / 1000) });
+  }
+
+  try {
+    const zone = timeZoneForKey(tz);
+    const todayCompact = formatDateCompactInTimeZone(new Date(), zone);
+    const start = addDaysToCompact(todayCompact, -1);
+    const end = addDaysToCompact(todayCompact, 1);
+    const upstreamUrl = buildProUrlRange(baseUrl, sport, false, start, end);
+    const resp = await fetch(upstreamUrl, {
+      headers: { Accept: "application/json" },
+      cf: { cacheTtl: 10, cacheEverything: false },
+    });
+    if (!resp.ok) {
+      return jsonResponse({ sport, source, games: [], updated_at: Math.floor(Date.now() / 1000) });
+    }
+    const data = await resp.json().catch(() => null);
+    const adapted = adaptUpstreamPayload(data, { sport, source: "pro" });
+    const candidates = extractGameCandidates(adapted).filter((g) => g && typeof g === "object");
+
+    const live = candidates
+      .filter((g) => normalizeStatus(g.status || g.state || g.game_status || "") === "LIVE")
+      .map((g) => {
+        const id = String(g.event_id || g.eventId || g.id || "").trim();
+        const home = normalizeAbbr(g.home_team || g.home || g.homeTeam || "HOME");
+        const away = normalizeAbbr(g.away_team || g.away || g.awayTeam || "AWAY");
+        const label = `${away} @ ${home}`;
+        return {
+          id,
+          label,
+          home_abbr: home,
+          away_abbr: away,
+          status: normalizeStatus(g.status || g.state || g.game_status || ""),
+          game_time: g.game_time || g.start_time || g.start || null,
+        };
+      })
+      .filter((g) => !!g.id);
+
+    const out = { sport, source, games: live, updated_at: Math.floor(Date.now() / 1000) };
+    if (debug) {
+      out._debug = {
+        upstream_url: upstreamUrl,
+        tz,
+        time_zone: zone,
+        event_count: Array.isArray(data?.events) ? data.events.length : 0,
+        live_count: live.length,
+        preview: truncateJsonPreview(data, 20000),
+      };
+      try { console.log("/games debug", JSON.stringify(out._debug)); } catch {}
+    }
+    return jsonResponse(out);
+  } catch {
+    return jsonResponse({ sport, source, games: [], updated_at: Math.floor(Date.now() / 1000) });
   }
 }
 
@@ -2053,6 +2276,9 @@ function normalizeControl(input, deviceId) {
   const teamRaw = (input.team || DEFAULT_CONTROL.team || "").toString().trim().toUpperCase();
   const team = normalizeTeamCodeFromInput(teamRaw);
 
+  const gameIdRaw = (input.game_id || "").toString().trim();
+  const game_id = /^[0-9]{1,32}$/.test(gameIdRaw) ? gameIdRaw : "";
+
   const normalizedView = (input.view || "").toString().trim().toLowerCase();
   const view = ["score", "timer"].includes(normalizedView) ? normalizedView : DEFAULT_CONTROL.view;
   const mode = ["auto", "force-live", "idle"].includes(input.mode)
@@ -2072,6 +2298,7 @@ function normalizeControl(input, deviceId) {
     source,
     sport,
     team,
+    game_id,
     view,
     mode,
     tz,
@@ -2278,7 +2505,9 @@ async function fetchProScore(control, env, opts = {}) {
 
     const adapted = adaptUpstreamPayload(data, { sport: control.sport, source: "pro" });
 
-    const normalized = normalizeProUpstream(adapted, control);
+    const normalized = control?.game_id
+      ? (normalizeProUpstreamByGameId(adapted, control) || normalizeProUpstream(adapted, control))
+      : normalizeProUpstream(adapted, control);
     const out = normalized || makeProMock(control, "SCHEDULED");
     if (opts?.debug) {
       out._debug = {
@@ -3419,6 +3648,7 @@ function adaptEspnScoreboard(data, hint = {}) {
     };
 
     games.push({
+      event_id: String(event.id || comp.id || "").trim() || undefined,
       home: pickTeamKey(homeTeam) || "HOME",
       away: pickTeamKey(awayTeam) || "AWAY",
       home_score: parseNullableInt(homeC.score),
@@ -3436,6 +3666,39 @@ function adaptEspnScoreboard(data, hint = {}) {
     });
   }
   return { games };
+}
+
+function normalizeProUpstreamByGameId(data, control) {
+  const id = String(control?.game_id || "").trim();
+  if (!id) return null;
+
+  const candidates = extractGameCandidates(data);
+  const game = candidates.find((g) => String(g?.event_id || g?.eventId || g?.id || "").trim() === id) || null;
+  if (!game) return null;
+
+  const home = (game.home_team || game.home || game.homeTeam || "HOME").toString().trim().toUpperCase();
+  const away = (game.away_team || game.away || game.awayTeam || "AWAY").toString().trim().toUpperCase();
+
+  const payload = {
+    source: "pro",
+    sport: (control?.sport || "nfl").toString().trim().toLowerCase() || "nfl",
+    // Always treat the selected game as home-vs-away so the device can show both corners consistently.
+    team: home,
+    opponent: away,
+    team_score: parseNullableInt(game.home_score ?? game.homeScore),
+    opp_score: parseNullableInt(game.away_score ?? game.awayScore),
+    status: normalizeStatus(game.status || game.state || game.game_status || "SCHEDULED"),
+    game_time: game.game_time || game.start_time || game.start || null,
+    at: "Home",
+    team_primary: normalizeHexColor(game.home_primary || game.homePrimary || game.home_color || game.homeColor),
+    team_secondary: normalizeHexColor(game.home_secondary || game.homeSecondary || game.home_alt || game.homeAlt),
+    opp_primary: normalizeHexColor(game.away_primary || game.awayPrimary || game.away_color || game.awayColor),
+    opp_secondary: normalizeHexColor(game.away_secondary || game.awaySecondary || game.away_alt || game.awayAlt),
+  };
+
+  // If the selected game is upcoming (rare for /games which is LIVE), include countdown.
+  const withTimer = withCountdownFromGame(payload, game, payload.status === "SCHEDULED");
+  return withTeamMeta(withTimer, game);
 }
 
 function adaptFootballDataMatches(data) {

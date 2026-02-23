@@ -59,8 +59,8 @@ TIME_SYNC_INTERVAL_SECONDS = env_int("TIME_SYNC_INTERVAL_SECONDS", 6 * 60 * 60)
 TIME_SYNC_PATH = env("TIME_SYNC_PATH", "/__version").strip() or "/__version"
 
 BOOT_BRIGHTNESS = env_float("BOOT_BRIGHTNESS", 0.01)
-DISPLAY_BRIGHTNESS = env_float("DISPLAY_BRIGHTNESS", 0.03)
-MAX_BRIGHTNESS = env_float("MAX_BRIGHTNESS", 0.05)
+DISPLAY_BRIGHTNESS = env_float("DISPLAY_BRIGHTNESS", 0.02)
+MAX_BRIGHTNESS = env_float("MAX_BRIGHTNESS", 0.03)
 
 
 def headers():
@@ -131,8 +131,12 @@ display.root_group = root
 
 time_lbl = Label(terminalio.FONT, text="--:--", color=0xFFFFFF)
 score_lbl = Label(terminalio.FONT, text="--", color=0xFFFFFF)
+home_lbl = Label(terminalio.FONT, text="", color=0xFFFFFF)
+away_lbl = Label(terminalio.FONT, text="", color=0xFFFFFF)
 root.append(time_lbl)
 root.append(score_lbl)
+root.append(home_lbl)
+root.append(away_lbl)
 
 
 def _center(lbl, text, y):
@@ -150,15 +154,93 @@ def _refresh():
         pass
 
 
+def _hex_to_rgb_int(v, default=0xFFFFFF):
+    s = str(v or "").strip().upper()
+    if s.startswith("#"):
+        s = s[1:]
+    if len(s) != 6:
+        return int(default)
+    try:
+        return int(s, 16) & 0xFFFFFF
+    except Exception:
+        return int(default)
+
+
+def _abbr3(v, default=""):
+    s = str(v or "").strip().upper()
+    if not s:
+        return default
+    # Keep alnum only so "New York" -> "NEWYORK".
+    out = ""
+    for c in s:
+        if ("A" <= c <= "Z") or ("0" <= c <= "9"):
+            out += c
+            if len(out) >= 3:
+                break
+    if not out:
+        return default
+    if len(out) >= 3:
+        return out
+    return (out + "XXX")[:3]
+
+
+def _set_top_labels(score_obj):
+    # Show home team (top-left) and away team (top-right).
+    # Uses 'at' to determine whether the selected team is home or away.
+    team_abbr = _abbr3(
+        (score_obj or {}).get("team_abbr")
+        or (score_obj or {}).get("abbr")
+        or (score_obj or {}).get("team")
+        or "",
+        default="",
+    )
+    opp_abbr = _abbr3(
+        (score_obj or {}).get("opponent_abbr")
+        or (score_obj or {}).get("opp_abbr")
+        or (score_obj or {}).get("opponent")
+        or "",
+        default="",
+    )
+    at = str((score_obj or {}).get("at") or "").strip().lower()
+
+    team_col = _hex_to_rgb_int((score_obj or {}).get("team_primary"))
+    opp_col = _hex_to_rgb_int((score_obj or {}).get("opp_primary"))
+
+    if at == "away":
+        home_text, away_text = opp_abbr, team_abbr
+        home_col, away_col = opp_col, team_col
+    else:
+        # "home" or "neutral" (default: team left, opponent right)
+        home_text, away_text = team_abbr, opp_abbr
+        home_col, away_col = team_col, opp_col
+
+    home_lbl.text = home_text or ""
+    away_lbl.text = away_text or ""
+    home_lbl.color = home_col
+    away_lbl.color = away_col
+
+    # Position in corners. terminalio ~6px wide.
+    home_lbl.x = 0
+    # Label.y is the font baseline; keep >=7 so text doesn't render off-screen.
+    home_lbl.y = 7
+    away_lbl.x = max(0, W - (len(away_lbl.text) * 6))
+    away_lbl.y = 7
+
+
 # ---- WiFi + HTTP (minimal) ----
 requests = None
 esp = None
 wifi = None
+last_net_init_attempt = -999.0
+NET_INIT_COOLDOWN_SECONDS = 10
 
 
 def net_init():
     global requests, esp, wifi
-    # requests/esp/wifi can be set to False if init failed; don't retry in a tight loop.
+    # requests=False means permanently disabled (missing/incompatible libs).
+    if requests is False:
+        return
+    # If already initialized, don't re-init.
     if requests is not None:
         return
 
@@ -170,27 +252,34 @@ def net_init():
         import adafruit_connection_manager as _acm
         import adafruit_requests as _areq
     except Exception:
-        # If libraries are missing or incompatible, avoid crashing; scoreboard will run without Wi-Fi.
-        esp = False
-        wifi = False
+        # If libraries are missing or incompatible, avoid crashing; disable Wi-Fi permanently.
+        esp = None
+        wifi = None
         requests = False
         return
 
-    esp32_cs = DigitalInOut(board.ESP_CS)
-    esp32_ready = DigitalInOut(board.ESP_BUSY)
-    esp32_reset = DigitalInOut(board.ESP_RESET)
+    try:
+        esp32_cs = DigitalInOut(board.ESP_CS)
+        esp32_ready = DigitalInOut(board.ESP_BUSY)
+        esp32_reset = DigitalInOut(board.ESP_RESET)
 
-    # Prefer ESP-specific SPI pins when present (MatrixPortal), otherwise fall back.
-    sck = getattr(board, "ESP_SCK", getattr(board, "SCK1", board.SCK))
-    mosi = getattr(board, "ESP_MOSI", getattr(board, "MOSI1", board.MOSI))
-    miso = getattr(board, "ESP_MISO", getattr(board, "MISO1", board.MISO))
-    spi = busio.SPI(sck, mosi, miso)
+        # Prefer ESP-specific SPI pins when present (MatrixPortal), otherwise fall back.
+        sck = getattr(board, "ESP_SCK", getattr(board, "SCK1", board.SCK))
+        mosi = getattr(board, "ESP_MOSI", getattr(board, "MOSI1", board.MOSI))
+        miso = getattr(board, "ESP_MISO", getattr(board, "MISO1", board.MISO))
+        spi = busio.SPI(sck, mosi, miso)
 
-    esp = _esp32spi.ESP_SPIcontrol(spi, esp32_cs, esp32_ready, esp32_reset)
-    wifi = _WiFiManager(esp, WIFI_SSID or "", WIFI_PASSWORD or "")
-    pool = _acm.get_radio_socketpool(esp)
-    ssl = _acm.get_radio_ssl_context(esp)
-    requests = _areq.Session(pool, ssl)
+        esp = _esp32spi.ESP_SPIcontrol(spi, esp32_cs, esp32_ready, esp32_reset)
+        wifi = _WiFiManager(esp, WIFI_SSID or "", WIFI_PASSWORD or "")
+        pool = _acm.get_radio_socketpool(esp)
+        ssl = _acm.get_radio_ssl_context(esp)
+        requests = _areq.Session(pool, ssl)
+    except Exception:
+        # Transient init failure: keep requests=None so we can retry later.
+        esp = None
+        wifi = None
+        requests = None
+        return
 
 
 def net_connect():
@@ -315,6 +404,7 @@ last_time_sync = -999
 
 last_time_text = ""
 last_score_text = ""
+last_top_key = ""
 
 
 def format_countdown_dhm(total_seconds):
@@ -341,17 +431,19 @@ while True:
         except Exception:
             pass
 
-    # init/connect wifi lazily
+    # init/connect wifi lazily (with cooldown so we don't thrash)
     if WIFI_SSID and CONTROL_BASE_URL:
-        try:
-            net_init()
-        except Exception:
-            pass
-        if (esp is not None) and (not esp.is_connected) and (mono - last_wifi) > 20:
+        if requests is None and (mono - last_net_init_attempt) > NET_INIT_COOLDOWN_SECONDS:
+            last_net_init_attempt = mono
+            try:
+                net_init()
+            except Exception:
+                pass
+        if bool(esp) and (not getattr(esp, "is_connected", False)) and (mono - last_wifi) > 20:
             last_wifi = mono
             net_connect()
 
-    connected = (esp is not None) and getattr(esp, "is_connected", False)
+    connected = bool(esp) and bool(getattr(esp, "is_connected", False))
 
     # If RTC isn't set yet (or periodically), sync from Worker Date header.
     try:
@@ -413,14 +505,36 @@ while True:
             last_time_text = t
         time_lbl.hidden = False
         score_lbl.hidden = True
+        home_lbl.hidden = True
+        away_lbl.hidden = True
     else:
+        home_lbl.hidden = False
+        away_lbl.hidden = False
+
+        # Update top labels when team/opponent/at/colors change.
+        # Keep this cheap; it runs every loop.
+        top_key = (
+            str(score.get("team_abbr") or score.get("team") or "")
+            + "|" + str(score.get("opponent_abbr") or score.get("opponent") or "")
+            + "|" + str(score.get("at") or "")
+            + "|" + str(score.get("team_primary") or "")
+            + "|" + str(score.get("opp_primary") or "")
+        )
+        if top_key != last_top_key:
+            _set_top_labels(score)
+            last_top_key = top_key
+
         # Timer view support: Worker sends countdown_* fields with null scores.
-        if bool(score.get("countdown_active")) and score.get("countdown_seconds") is not None:
+        if not connected:
+            s = "NO WIFI"
+        elif bool(score.get("countdown_active")) and score.get("countdown_seconds") is not None:
             s = format_countdown_dhm(score.get("countdown_seconds")) or "--:--"
         else:
             a = score.get("team_score")
             b = score.get("opp_score")
-            if a is None or b is None or bool(score.get("view_unavailable")):
+            if a is None or b is None:
+                s = "..."
+            elif bool(score.get("view_unavailable")):
                 s = "NOT ON"
             else:
                 s = f"{int(a)}-{int(b)}"
