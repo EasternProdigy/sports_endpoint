@@ -138,6 +138,10 @@ root.append(score_lbl)
 root.append(home_lbl)
 root.append(away_lbl)
 
+# Fixed, high-contrast corner colors so abbreviations are never black/near-black.
+HOME_ABBR_COLOR = 0x0000FF  # blue
+AWAY_ABBR_COLOR = 0xFF0000  # red
+
 
 def _center(lbl, text, y):
     s = str(text or "")
@@ -218,21 +222,16 @@ def _set_top_labels(score_obj):
     )
     at = str((score_obj or {}).get("at") or "").strip().lower()
 
-    team_col = _clamp_dark_to_white(_hex_to_rgb_int((score_obj or {}).get("team_primary")))
-    opp_col = _clamp_dark_to_white(_hex_to_rgb_int((score_obj or {}).get("opp_primary")))
-
     if at == "away":
         home_text, away_text = opp_abbr, team_abbr
-        home_col, away_col = opp_col, team_col
     else:
         # "home" or "neutral" (default: team left, opponent right)
         home_text, away_text = team_abbr, opp_abbr
-        home_col, away_col = team_col, opp_col
 
     home_lbl.text = home_text or ""
     away_lbl.text = away_text or ""
-    home_lbl.color = home_col
-    away_lbl.color = away_col
+    home_lbl.color = HOME_ABBR_COLOR
+    away_lbl.color = AWAY_ABBR_COLOR
 
     # Position in corners. terminalio ~6px wide.
     home_lbl.x = 0
@@ -532,8 +531,6 @@ while True:
             str(score.get("team_abbr") or score.get("team") or "")
             + "|" + str(score.get("opponent_abbr") or score.get("opponent") or "")
             + "|" + str(score.get("at") or "")
-            + "|" + str(score.get("team_primary") or "")
-            + "|" + str(score.get("opp_primary") or "")
         )
         if top_key != last_top_key:
             _set_top_labels(score)

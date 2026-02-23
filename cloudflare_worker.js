@@ -54,7 +54,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
 };
 
-const WORKER_VERSION = "2026.02.23-ui12";
+const WORKER_VERSION = "2026.02.23-ui13";
 
 // Public NCAA API (henrygd/ncaa-api). This mirrors ncaa.com paths.
 // Docs: https://ncaa-api.henrygd.me/openapi
@@ -1799,8 +1799,31 @@ async function handleGetScore(searchParams, env) {
       : await fetchOlympicsScore(control, env);
   } else if (isNcaaBasketballControl(control)) {
     payload = await fetchNcaaBasketballScore(control, env);
+
+    // Score view fallback: if the team isn't currently playing (or bracket has no live game),
+    // show a countdown to the next scheduled game when possible.
+    if (String(control?.view || "score").toLowerCase() === "score") {
+      const hasScore = payload && payload.team_score !== null && payload.team_score !== undefined && payload.opp_score !== null && payload.opp_score !== undefined;
+      const hasCountdown = payload && payload.countdown_active === true;
+      const unavailable = payload && (payload.view_unavailable === true || String(payload.status || "").toUpperCase() === "NONE");
+      if ((!hasScore && !hasCountdown) || unavailable) {
+        const countdown = await fetchNcaaBasketballNextGameCountdown(control, env);
+        if (countdown && countdown.countdown_active === true) payload = countdown;
+      }
+    }
   } else if (isNcaaSoftballControl(control)) {
     payload = await fetchNcaaSoftballScore(control, env);
+
+    // Score view fallback: when not playing, show next-game countdown.
+    if (String(control?.view || "score").toLowerCase() === "score") {
+      const hasScore = payload && payload.team_score !== null && payload.team_score !== undefined && payload.opp_score !== null && payload.opp_score !== undefined;
+      const hasCountdown = payload && payload.countdown_active === true;
+      const unavailable = payload && (payload.view_unavailable === true || String(payload.status || "").toUpperCase() === "NONE");
+      if ((!hasScore && !hasCountdown) || unavailable) {
+        const countdown = await fetchNcaaSoftballNextGameCountdown(control, env);
+        if (countdown && countdown.countdown_active === true) payload = countdown;
+      }
+    }
   } else {
     payload = await fetchWellesleyScore(control, env);
   }
