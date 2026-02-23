@@ -393,21 +393,28 @@ function renderControlUiHtml(url) {
           <div id="liveTeamWrap">
             <label for="teamLive">Team (Live)</label>
             <select id="teamLive"></select>
-            <div class="muted" style="margin-top:8px;">Shows teams actively playing right now (from ESPN). Choose <strong>Timer…</strong> for a next-game countdown.</div>
+            <div class="muted" style="margin-top:8px;">Only shows teams actively playing right now (from ESPN).</div>
+
+            <div class="row" style="margin-top:10px; align-items:center;">
+              <div class="pill" style="justify-content:space-between;">
+                <strong>Timer</strong>
+                <div id="timerSwitch" class="switch" role="switch" aria-checked="false" tabindex="0"><span></span></div>
+              </div>
+
+              <div>
+                <label for="timerTeam" style="margin:0 0 6px;">Timer Team</label>
+                <select id="timerTeam" disabled></select>
+              </div>
+            </div>
+
+            <div class="muted" style="margin-top:8px;">When Timer is enabled, the board shows a days:hours:minutes countdown to that team’s next game.</div>
           </div>
 
-          <div id="timerControls" class="advHidden">
-            <label for="team">Team (Timer)</label>
-            <div class="combo">
-              <input id="team" value="Dallas Cowboys (DAL)" autocapitalize="words" />
-              <button id="teamBtn" class="comboBtn" type="button" aria-label="Teams">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                  <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </button>
-              <div id="teamList" class="comboList advHidden" role="listbox" aria-label="Teams"></div>
-            </div>
-            <div class="muted" style="margin-top:8px;">Shows a days:hours:minutes countdown to the next game on the board.</div>
+          <!-- Hidden legacy combo list (used to build timerTeam options) -->
+          <div class="combo advHidden">
+            <input id="team" value="Dallas Cowboys (DAL)" autocapitalize="words" />
+            <button id="teamBtn" class="comboBtn" type="button" aria-label="Teams"></button>
+            <div id="teamList" class="comboList advHidden" role="listbox" aria-label="Teams"></div>
           </div>
         </div>
 
@@ -551,8 +558,6 @@ function renderControlUiHtml(url) {
         tz: cookieGet("ui_tz") || "ct",
         brightness: parseFloat(cookieGet("ui_brightness") || "") || 0.22,
       };
-
-      const TIMER_VALUE = "__TIMER__";
 
       const teamLists = {
         dev: [
@@ -832,19 +837,40 @@ function renderControlUiHtml(url) {
         const v = String(view || "").trim().toLowerCase();
         state.view = (v === "timer") ? "timer" : "score";
         cookieSet("ui_view", state.view);
-        $("timerControls").classList.toggle("advHidden", state.view !== "timer");
-        $("liveTeamWrap").classList.toggle("advHidden", state.view === "timer");
+        setSwitch($("timerSwitch"), state.view === "timer");
+        $("timerTeam").disabled = state.view !== "timer";
+      }
+
+      function buildTimerTeamOptions() {
+        const sel = $("timerTeam");
+        if (!sel) return;
+        const sport = String(state.sport || "").trim().toLowerCase();
+        const arr = teamOptionsForSport(sport);
+        sel.innerHTML = "";
+        for (const [name, abbr] of arr) {
+          const label = formatTeamDisplay(name, abbr);
+          const opt = document.createElement("option");
+          opt.value = parseTeamAbbr(label);
+          opt.textContent = label;
+          sel.appendChild(opt);
+        }
+        const remembered = cookieGet("ui_timer_team_" + sport);
+        if (remembered && Array.from(sel.options).some((o) => o.value === remembered)) {
+          sel.value = remembered;
+        }
       }
 
       async function loadLiveTeams() {
         try {
           if (state.source !== "pro" || state.display === "clock") {
-            $("teamLive").innerHTML = '<option value="' + TIMER_VALUE + '">Timer…</option>';
+            $("teamLive").innerHTML = '<option value="">(No live teams)</option>';
+            $("teamLive").value = "";
             return;
           }
 
           const sport = $("sport").value.trim() || "nfl";
-          const resp = await getJson("/teams?sport=" + encodeURIComponent(sport) + "&source=pro");
+          const tz = $("tz").value || "ct";
+          const resp = await getJson("/teams?sport=" + encodeURIComponent(sport) + "&source=pro&tz=" + encodeURIComponent(tz));
           const teams = (resp?.status === 200 && resp?.json && Array.isArray(resp.json.teams)) ? resp.json.teams : [];
 
           const sel = $("teamLive");
@@ -852,11 +878,10 @@ function renderControlUiHtml(url) {
 
           if (!teams.length) {
             const opt = document.createElement("option");
-            opt.value = TIMER_VALUE;
-            opt.textContent = "Timer…";
+            opt.value = "";
+            opt.textContent = "(No live teams)";
             sel.appendChild(opt);
-            sel.value = TIMER_VALUE;
-            setView("timer");
+            sel.value = "";
             return;
           }
 
@@ -870,25 +895,20 @@ function renderControlUiHtml(url) {
             sel.appendChild(opt);
           }
 
-          // Timer option at bottom.
-          const timerOpt = document.createElement("option");
-          timerOpt.value = TIMER_VALUE;
-          timerOpt.textContent = "Timer…";
-          sel.appendChild(timerOpt);
-
           // Restore last selection if possible.
           const remembered = cookieGet("ui_live_team_" + sport.toLowerCase());
           if (remembered && Array.from(sel.options).some((o) => o.value === remembered)) {
             sel.value = remembered;
             state.liveTeam = remembered;
           } else {
-            sel.value = sel.options[0]?.value || TIMER_VALUE;
+            sel.value = sel.options[0]?.value || "";
             state.liveTeam = sel.value;
           }
-
-          setView(sel.value === TIMER_VALUE ? "timer" : "score");
         } catch {
-          try { $("teamLive").innerHTML = '<option value="' + TIMER_VALUE + '">Timer…</option>'; } catch {}
+          try {
+            $("teamLive").innerHTML = '<option value="">(No live teams)</option>';
+            $("teamLive").value = "";
+          } catch {}
         }
       }
 
@@ -897,6 +917,7 @@ function renderControlUiHtml(url) {
       applyTabs();
       applyDisplayMode();
       setView(state.view);
+      buildTimerTeamOptions();
 
       function buildControlPayload(opts) {
         const device_id = $("device").value.trim() || "matrix-01";
@@ -904,7 +925,7 @@ function renderControlUiHtml(url) {
         const view = state.view;
         let team = "";
         if (view === "timer") {
-          team = parseTeamAbbr($("team").value);
+          team = String($("timerTeam").value || "").trim().toUpperCase();
         } else {
           team = String($("teamLive").value || "").trim().toUpperCase();
         }
@@ -927,7 +948,8 @@ function renderControlUiHtml(url) {
         cookieSet("ui_sport", $("sport").value.trim());
         cookieSet("ui_view", String(state.view || "score"));
         if (String(state.view) === "timer") {
-          cookieSet(teamCookieKey($("sport").value.trim()), $("team").value);
+          const s = $("sport").value.trim().toLowerCase();
+          cookieSet("ui_timer_team_" + s, String($("timerTeam").value || ""));
         } else {
           const s = $("sport").value.trim().toLowerCase();
           cookieSet("ui_live_team_" + s, String($("teamLive").value || ""));
@@ -1081,11 +1103,13 @@ function renderControlUiHtml(url) {
         try {
           const sportKey = String(sport || "").trim().toLowerCase();
           if (team) cookieSet("ui_live_team_" + sportKey, String(team || ""));
+          if (team) cookieSet("ui_timer_team_" + sportKey, String(team || ""));
         } catch {}
 
         setCurrentSummary(control);
         refreshSendButtonLabel();
         loadLiveTeams();
+        buildTimerTeamOptions();
       }
 
       // On load, read back the saved control so the UI reflects what's actually stored.
@@ -1167,7 +1191,7 @@ function renderControlUiHtml(url) {
 
       $("getScore").addEventListener("click", async () => {
         const device = $("device").value.trim();
-        show(await getJson("/score?device_id=" + encodeURIComponent(device)));
+        show(await getJson("/score?device_id=" + encodeURIComponent(device) + "&debug=1"));
       });
 
       $("getHealth").addEventListener("click", async () => {
@@ -1229,6 +1253,7 @@ function renderControlUiHtml(url) {
         }
         closeTeamDropdown();
         setView("score");
+        buildTimerTeamOptions();
         loadLiveTeams();
       });
 
@@ -1238,14 +1263,28 @@ function renderControlUiHtml(url) {
       });
 
       $("teamLive").addEventListener("change", () => {
-        const v = String($("teamLive").value || "").trim();
-        if (v === TIMER_VALUE) {
-          setView("timer");
-          return;
-        }
+        const v = String($("teamLive").value || "").trim().toUpperCase();
         state.liveTeam = v;
         try { cookieSet("ui_live_team_" + String(state.sport || "").toLowerCase(), v); } catch {}
-        setView("score");
+        // leave timer switch as-is
+      });
+
+      $("timerTeam").addEventListener("change", () => {
+        const v = String($("timerTeam").value || "").trim().toUpperCase();
+        try { cookieSet("ui_timer_team_" + String(state.sport || "").toLowerCase(), v); } catch {}
+      });
+
+      function toggleTimer() {
+        const enabled = !($("timerSwitch").classList.contains("on"));
+        setView(enabled ? "timer" : "score");
+      }
+
+      $("timerSwitch").addEventListener("click", toggleTimer);
+      $("timerSwitch").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggleTimer();
+        }
       });
 
       $("team").addEventListener("focus", () => {
@@ -1276,6 +1315,7 @@ function renderControlUiHtml(url) {
       $("tz").addEventListener("change", () => {
         state.tz = $("tz").value;
         cookieSet("ui_tz", state.tz);
+        loadLiveTeams();
       });
 
       // Modal
@@ -1400,6 +1440,8 @@ async function handleGetScore(searchParams, env) {
     return jsonResponse({ error: "Missing device_id" }, 400);
   }
 
+  const debug = String(searchParams.get("debug") || "").trim() === "1";
+
   const control = await getControl(env, deviceId);
   let payload;
 
@@ -1414,7 +1456,7 @@ async function handleGetScore(searchParams, env) {
   // Implemented for ESPN Pro sports first.
   if (String(control?.view || "").toLowerCase() === "timer") {
     if (String(control?.source || "").toLowerCase() === "pro") {
-      payload = await fetchProNextGameCountdown(control, env);
+      payload = await fetchProNextGameCountdown(control, env, { debug });
       return jsonResponse(finalizeDisplayPayload(payload));
     }
     // Fallback: if timer requested for unsupported sources, just return normal score payload.
@@ -1427,7 +1469,7 @@ async function handleGetScore(searchParams, env) {
       ? await fetchIndividualSportScore(control, env)
       : isRegularSoccerControl(control)
         ? await fetchSoccerScore(control, env, "regular")
-      : await fetchProScore(control, env);
+        : await fetchProScore(control, env, { debug });
   } else if (isOlympicsControl(control)) {
     payload = isOlympicIndividualSport(control.sport)
       ? await fetchIndividualSportScore(control, env, "olympics")
@@ -1446,6 +1488,8 @@ async function handleGetScore(searchParams, env) {
 async function handleGetTeams(searchParams, env) {
   const sport = (searchParams.get("sport") || "nfl").toString().trim().toLowerCase();
   const source = (searchParams.get("source") || "pro").toString().trim().toLowerCase();
+  const tz = (searchParams.get("tz") || "ct").toString().trim().toLowerCase();
+  const debug = String(searchParams.get("debug") || "").trim() === "1";
 
   // Only implemented for ESPN-backed "pro" sports right now.
   if (source !== "pro") {
@@ -1458,8 +1502,12 @@ async function handleGetTeams(searchParams, env) {
   }
 
   try {
-    const url = buildProUrlForDateCompact(baseUrl, sport, false, formatDateCompact(new Date()));
-    const resp = await fetch(url, {
+    const zone = timeZoneForKey(tz);
+    const todayCompact = formatDateCompactInTimeZone(new Date(), zone);
+    const start = addDaysToCompact(todayCompact, -1);
+    const end = addDaysToCompact(todayCompact, 1);
+    const upstreamUrl = buildProUrlRange(baseUrl, sport, false, start, end);
+    const resp = await fetch(upstreamUrl, {
       headers: { Accept: "application/json" },
       cf: { cacheTtl: 15, cacheEverything: false },
     });
@@ -1468,7 +1516,19 @@ async function handleGetTeams(searchParams, env) {
     }
     const data = await resp.json().catch(() => null);
     const teams = extractLiveTeamsFromEspnScoreboard(data);
-    return jsonResponse({ sport, source, teams, updated_at: Math.floor(Date.now() / 1000) });
+    const out = { sport, source, teams, updated_at: Math.floor(Date.now() / 1000) };
+    if (debug) {
+      const preview = truncateJsonPreview(data, 20000);
+      out._debug = {
+        upstream_url: upstreamUrl,
+        tz,
+        time_zone: zone,
+        event_count: Array.isArray(data?.events) ? data.events.length : 0,
+        preview,
+      };
+      try { console.log("/teams debug", JSON.stringify(out._debug)); } catch {}
+    }
+    return jsonResponse(out);
   } catch {
     return jsonResponse({ sport, source, teams: [], updated_at: Math.floor(Date.now() / 1000) });
   }
@@ -1876,7 +1936,7 @@ function kvKey(deviceId) {
   return `device:${deviceId}`;
 }
 
-async function fetchProScore(control, env) {
+async function fetchProScore(control, env, opts = {}) {
   const baseUrl = env.SPORTS_API_URL;
 
   if (!baseUrl) {
@@ -1884,7 +1944,11 @@ async function fetchProScore(control, env) {
   }
 
   const wantsSuperBowl = isSuperBowlControl(control);
-  const upstreamUrl = buildProUrl(baseUrl, control.sport, wantsSuperBowl);
+  const zone = timeZoneForKey(control?.tz || "ct");
+  const todayCompact = formatDateCompactInTimeZone(new Date(), zone);
+  const start = addDaysToCompact(todayCompact, -1);
+  const end = addDaysToCompact(todayCompact, 1);
+  const upstreamUrl = buildProUrlRange(baseUrl, control.sport, wantsSuperBowl, start, end);
 
   try {
     const resp = await fetch(upstreamUrl, {
@@ -1906,7 +1970,16 @@ async function fetchProScore(control, env) {
     const adapted = adaptUpstreamPayload(data, { sport: control.sport, source: "pro" });
 
     const normalized = normalizeProUpstream(adapted, control);
-    return normalized || makeProMock(control, "SCHEDULED");
+    const out = normalized || makeProMock(control, "SCHEDULED");
+    if (opts?.debug) {
+      out._debug = {
+        upstream_url: upstreamUrl,
+        event_count: Array.isArray(data?.events) ? data.events.length : 0,
+        preview: truncateJsonPreview(data, 20000),
+      };
+      try { console.log("/score debug", JSON.stringify(out._debug)); } catch {}
+    }
+    return out;
   } catch {
     return makeProMock(control, "SCHEDULED");
   }
@@ -2509,13 +2582,69 @@ function extractLiveTeamsFromEspnScoreboard(data) {
   return teams;
 }
 
-function addDaysUtcCompact(date, days) {
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  d.setUTCDate(d.getUTCDate() + (Number(days) || 0));
-  return formatDateCompact(d);
+function timeZoneForKey(key) {
+  const k = String(key || "").trim().toLowerCase();
+  if (k === "utc") return "UTC";
+  if (k === "et") return "America/New_York";
+  if (k === "ct") return "America/Chicago";
+  if (k === "mt") return "America/Denver";
+  if (k === "pt") return "America/Los_Angeles";
+  return "America/Chicago";
 }
 
-async function fetchProNextGameCountdown(control, env) {
+function datePartsInTimeZone(date, timeZone) {
+  const d = date instanceof Date ? date : new Date();
+  const tz = String(timeZone || "UTC");
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = fmt.formatToParts(d);
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  return {
+    y: y ? Number(y) : d.getUTCFullYear(),
+    m: m ? Number(m) : (d.getUTCMonth() + 1),
+    d: day ? Number(day) : d.getUTCDate(),
+  };
+}
+
+function formatDateCompactInTimeZone(date, timeZone) {
+  const p = datePartsInTimeZone(date, timeZone);
+  const y = String(p.y).padStart(4, "0");
+  const m = String(p.m).padStart(2, "0");
+  const d = String(p.d).padStart(2, "0");
+  return `${y}${m}${d}`;
+}
+
+function addDaysToCompact(compact, days) {
+  const s = String(compact || "").trim();
+  const m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (!m) return formatDateCompact(new Date());
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const da = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, da));
+  dt.setUTCDate(dt.getUTCDate() + (Number(days) || 0));
+  return formatDateCompact(dt);
+}
+
+function truncateJsonPreview(obj, maxChars) {
+  const limit = Number(maxChars) > 100 ? Number(maxChars) : 20000;
+  try {
+    const s = JSON.stringify(obj);
+    if (!s) return "";
+    if (s.length <= limit) return s;
+    return s.slice(0, limit) + `\n…(truncated ${s.length - limit} chars)`;
+  } catch {
+    return "";
+  }
+}
+
+async function fetchProNextGameCountdown(control, env, opts = {}) {
   const baseUrl = env.SPORTS_API_URL;
   if (!baseUrl) {
     return makeProMock(control, "SCHEDULED");
@@ -2525,10 +2654,11 @@ async function fetchProNextGameCountdown(control, env) {
   const requestedTeam = (control?.team || "TEAM").toString().trim().toUpperCase() || "TEAM";
   const wantsSuperBowl = isSuperBowlControl(control);
 
-  // Look ahead so we can find the next scheduled game.
-  const today = new Date();
-  const start = formatDateCompact(today);
-  const end = addDaysUtcCompact(today, 14);
+  // Look ahead so we can find the next scheduled game (timezone-aware for day boundaries).
+  const zone = timeZoneForKey(control?.tz || "ct");
+  const todayCompact = formatDateCompactInTimeZone(new Date(), zone);
+  const start = addDaysToCompact(todayCompact, -1);
+  const end = addDaysToCompact(todayCompact, 14);
   const upstreamUrl = buildProUrlRange(baseUrl, sport, wantsSuperBowl, start, end);
 
   try {
@@ -2566,7 +2696,23 @@ async function fetchProNextGameCountdown(control, env) {
     normalized.opp_score = null;
 
     const withTimer = withCountdownFromGame(normalized, next, true);
-    return withTeamMeta(withTimer, next);
+    const out = withTeamMeta(withTimer, next);
+    if (opts?.debug) {
+      out._debug = {
+        upstream_url: upstreamUrl,
+        tz: String(control?.tz || "ct"),
+        time_zone: zone,
+        event_count: Array.isArray(data?.events) ? data.events.length : 0,
+        picked: {
+          home: next?.home,
+          away: next?.away,
+          game_time: next?.game_time,
+        },
+        preview: truncateJsonPreview(data, 20000),
+      };
+      try { console.log("/score timer debug", JSON.stringify(out._debug)); } catch {}
+    }
+    return out;
   } catch {
     return makeProMock(control, "SCHEDULED");
   }
