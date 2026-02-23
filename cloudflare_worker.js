@@ -598,6 +598,7 @@ function renderControlUiHtml(url) {
         view: cookieGet("ui_view") || "score", // score|timer
         team: "", // timer/team-search display string
         liveTeam: cookieGet("ui_live_team") || "", // team code
+        lastTeams: [], // last /teams response for current sport+source
         sourceOverride: cookieGet("ui_src_override") === "1",
         source: cookieGet("ui_source") || "pro",
         device: cookieGet("ui_device") || "${deviceId}",
@@ -927,7 +928,18 @@ function renderControlUiHtml(url) {
         const sel = $("timerTeam");
         if (!sel) return;
         const sport = String(state.sport || "").trim().toLowerCase();
-        const arr = teamOptionsForSport(sport);
+        const src = effectiveSource();
+
+        // For NCAA sources, use the live /teams data so we send the correct NCAA slug
+        // (e.g. WELLESLEY, ST-MARYS-CA) instead of legacy abbreviations.
+        let arr;
+        if ((src === "ncaa-softball" || src === "ncaa-basketball") && Array.isArray(state.lastTeams) && state.lastTeams.length) {
+          arr = state.lastTeams
+            .map((t) => [String(t?.name || t?.abbr || "").trim(), String(t?.abbr || "").trim().toUpperCase()])
+            .filter(([name, abbr]) => !!abbr && !!name);
+        } else {
+          arr = teamOptionsForSport(sport);
+        }
         sel.innerHTML = "";
         for (const [name, abbr] of arr) {
           const label = formatTeamDisplay(name, abbr);
@@ -961,6 +973,10 @@ function renderControlUiHtml(url) {
           );
           uiLog("/teams result", { status: resp?.status, keys: resp?.json ? Object.keys(resp.json) : undefined });
           const teams = (resp?.status === 200 && resp?.json && Array.isArray(resp.json.teams)) ? resp.json.teams : [];
+          state.lastTeams = teams;
+
+          // For NCAA sources, Timer Team options should come from /teams too.
+          try { buildTimerTeamOptions(); } catch {}
 
           const sel = $("teamLive");
           sel.innerHTML = "";
