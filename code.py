@@ -3,6 +3,7 @@
 
 import os
 import time
+import gc
 import rtc
 import board
 import busio
@@ -521,6 +522,12 @@ def _show_colons_for_timer():
 
 _place_digits_clock()
 
+# Free any temporary allocations made during initialization.
+try:
+    gc.collect()
+except Exception:
+    pass
+
 
 def show_clock(now_local):
     _hide_message()
@@ -810,6 +817,63 @@ def save_cache(mode, tz, score, brightness=None):
         pass
 
 
+_last_cache_save_mono = -999999
+_last_cache_line = None
+
+
+def save_cache_throttled(mode, tz, score, brightness=None, min_interval=10):
+    global _last_cache_save_mono, _last_cache_line
+    try:
+        mono = time.monotonic()
+    except Exception:
+        mono = 0
+    if (mono - _last_cache_save_mono) < float(min_interval or 0):
+        return
+
+    # Build the same line format as save_cache() but avoid writing if unchanged.
+    try:
+        team_score = "" if not score else ("" if score.get("team_score") is None else str(score.get("team_score")))
+        opp_score = "" if not score else ("" if score.get("opp_score") is None else str(score.get("opp_score")))
+        team_abbr = "" if not score else (score.get("team_abbr") or "")
+        opp_abbr = "" if not score else (score.get("opponent_abbr") or "")
+        at = "" if not score else (score.get("at") or "")
+        tp = "" if not score else (score.get("team_primary") or "")
+        ts = "" if not score else (score.get("team_secondary") or "")
+        op = "" if not score else (score.get("opp_primary") or "")
+        os2 = "" if not score else (score.get("opp_secondary") or "")
+        b = "" if brightness is None else str(brightness)
+        line = "|".join([
+            str(mode or ""),
+            str(tz or ""),
+            team_score,
+            opp_score,
+            str(team_abbr),
+            str(opp_abbr),
+            str(at),
+            str(tp),
+            str(ts),
+            str(op),
+            str(os2),
+            b,
+        ])
+    except Exception:
+        line = None
+
+    if not line:
+        return
+    if _last_cache_line is not None and line == _last_cache_line:
+        _last_cache_save_mono = mono
+        return
+
+    _last_cache_line = line
+    _last_cache_save_mono = mono
+    try:
+        with open(CACHE_FILE, "w") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
 # -----------------------
 # Network (lazy)
 # -----------------------
@@ -911,6 +975,24 @@ control = None
 score = None
 last_score_ok = False
 
+# Pre-allocate score dict to reduce heap churn.
+score_obj = {
+    "team_score": None,
+    "opp_score": None,
+    "team_abbr": None,
+    "opponent_abbr": None,
+    "team_name": None,
+    "opp_name": None,
+    "at": None,
+    "team_primary": None,
+    "team_secondary": None,
+    "opp_primary": None,
+    "opp_secondary": None,
+    "view_unavailable": True,
+    "countdown_active": False,
+    "countdown_seconds": None,
+}
+
 # Instant: draw something on first frame.
 cached = load_cache()
 
@@ -929,6 +1011,13 @@ except Exception:
 
 while True:
     mono = time.monotonic()
+
+    # Periodic GC to prevent fragmentation on long runs.
+    try:
+        if int(mono) % 30 == 0:
+            gc.collect()
+    except Exception:
+        pass
 
     utc_epoch = int(time.time())
     if utc_epoch < 1700000000:
@@ -1029,12 +1118,16 @@ while True:
             if isinstance(c, dict):
                 control = c
                 # Keep cache updated with latest control mode/tz.
-                save_cache(
+                save_cache_throttled(
                     str(control.get("mode") or ""),
                     str(control.get("tz") or ""),
                     score,
                     control.get("brightness"),
                 )
+                try:
+                    gc.collect()
+                except Exception:
+                    pass
             last_control = mono
 
         desired_mode = "auto"
@@ -1047,32 +1140,36 @@ while True:
             if (mono - last_score) >= poll_s:
                 s = get_json("/score?device_id=" + CONTROL_DEVICE_ID)
                 if isinstance(s, dict):
-                    score = {
-                        "team_score": s.get("team_score"),
-                        "opp_score": s.get("opp_score"),
-                        "team_abbr": s.get("team_abbr"),
-                        "opponent_abbr": s.get("opponent_abbr"),
-                        "team_name": s.get("team") or s.get("team_name"),
-                        "opp_name": s.get("opponent") or s.get("opponent_name"),
-                        "at": s.get("at"),
-                        "team_primary": s.get("team_primary"),
-                        "team_secondary": s.get("team_secondary"),
-                        "opp_primary": s.get("opp_primary"),
-                        "opp_secondary": s.get("opp_secondary"),
-                        "view_unavailable": bool(s.get("view_unavailable")),
-                        "countdown_active": bool(s.get("countdown_active")),
-                        "countdown_seconds": s.get("countdown_seconds"),
-                    }
-                    save_cache(
+                    score_obj["team_score"] = s.get("team_score")
+                    score_obj["opp_score"] = s.get("opp_score")
+                    score_obj["team_abbr"] = s.get("team_abbr")
+                    score_obj["opponent_abbr"] = s.get("opponent_abbr")
+                    score_obj["team_name"] = s.get("team") or s.get("team_name")
+                    score_obj["opp_name"] = s.get("opponent") or s.get("opponent_name")
+                    score_obj["at"] = s.get("at")
+                    score_obj["team_primary"] = s.get("team_primary")
+                    score_obj["team_secondary"] = s.get("team_secondary")
+                    score_obj["opp_primary"] = s.get("opp_primary")
+                    score_obj["opp_secondary"] = s.get("opp_secondary")
+                    score_obj["view_unavailable"] = bool(s.get("view_unavailable"))
+                    score_obj["countdown_active"] = bool(s.get("countdown_active"))
+                    score_obj["countdown_seconds"] = s.get("countdown_seconds")
+
+                    score = score_obj
+                    save_cache_throttled(
                         str((control or {}).get("mode") or ""),
                         str((control or {}).get("tz") or ""),
                         score,
                         (control or {}).get("brightness"),
                     )
+                    try:
+                        gc.collect()
+                    except Exception:
+                        pass
                     last_score_ok = True
                 else:
                     last_score_ok = False
                 last_score = mono
-            last_score = mono
+
 
     time.sleep(1)

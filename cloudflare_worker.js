@@ -131,7 +131,7 @@ function renderControlUiHtml(url) {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Matrix Scoreboard Control</title>
+    <title>Scoreboard Control</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2048%2048'%3E%3Crect%20x='4'%20y='4'%20width='10'%20height='10'/%3E%3Crect%20x='19'%20y='4'%20width='10'%20height='10'/%3E%3Crect%20x='34'%20y='4'%20width='10'%20height='10'/%3E%3Crect%20x='4'%20y='19'%20width='10'%20height='10'/%3E%3Crect%20x='19'%20y='19'%20width='10'%20height='10'/%3E%3Crect%20x='34'%20y='19'%20width='10'%20height='10'/%3E%3Crect%20x='4'%20y='34'%20width='10'%20height='10'/%3E%3Crect%20x='19'%20y='34'%20width='10'%20height='10'/%3E%3Crect%20x='34'%20y='34'%20width='10'%20height='10'/%3E%3C/svg%3E" />
     <style>
       * { box-sizing: border-box; }
