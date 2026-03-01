@@ -1,4 +1,4 @@
-name = "matrix-scoreboard-worker"
+name = "sports-endpoint"
 main = "cloudflare_worker.js"
 compatibility_date = "2026-02-13"
 workers_dev = true
